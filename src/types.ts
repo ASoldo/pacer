@@ -33,6 +33,34 @@ export type RouteInfo = {
   source: 'osrm'
 }
 
+export type RouteWeatherRisk = 'clear' | 'wet' | 'fog' | 'wind' | 'snow' | 'ice' | 'storm'
+
+export type RouteWeatherSeverity = 'normal' | 'caution' | 'severe'
+
+export type RouteWeatherSample = LatLng & {
+  id: string
+  distance: number
+  index: number
+  time: string
+  temperatureC: number
+  humidityPercent: number
+  precipitationMm: number
+  rainMm: number
+  showersMm: number
+  snowfallCm: number
+  weatherCode: number
+  cloudCoverPercent: number
+  windSpeedKph: number
+  windDirectionDegrees: number
+  windGustKph: number
+  risk: RouteWeatherRisk
+  severity: RouteWeatherSeverity
+  label: string
+  summary: string
+  source: 'open-meteo'
+  fetchedAt: number
+}
+
 export type PaceNoteKind = 'start' | 'finish' | 'corner' | 'junction' | 'custom'
 
 export type PaceNoteIconShape =

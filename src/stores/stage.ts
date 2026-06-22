@@ -18,6 +18,7 @@ import type {
   PhoneSensorState,
   RouteInfo,
   RouteMode,
+  RouteWeatherSample,
   SimulationState,
   SimulationSpeedMode,
   SpeechSettings,
@@ -30,6 +31,7 @@ import type {
 import { fetchRoute } from '../services/routing'
 import { preferredThrottle } from '../services/obd'
 import { generatePaceNotes } from '../services/paceNotes'
+import { fetchRouteWeather } from '../services/weather'
 import { canonicalVehicleVisualUrl, miniF55CooperSdVisuals, vehicleVisualsForProfile } from '../services/vehicleVisuals'
 import {
   bearingDegrees,
@@ -367,6 +369,11 @@ export const useStageStore = defineStore('stage', () => {
   const selectedGhostRunId = ref('')
   const obdTelemetry = ref<ObdTelemetryState>(defaultObdTelemetry())
   const phoneSensors = ref<PhoneSensorState>(defaultPhoneSensors())
+  const routeWeatherSamples = ref<RouteWeatherSample[]>([])
+  const routeWeatherLoading = ref(false)
+  const routeWeatherError = ref('')
+  const routeWeatherUpdatedAt = ref(0)
+  let routeWeatherRequestId = 0
 
   const hasRoute = computed(() => Boolean(route.value && route.value.geometry.length > 1))
   const totalDistance = computed(() => route.value?.distance ?? 0)
@@ -426,6 +433,22 @@ export const useStageStore = defineStore('stage', () => {
     const index = Math.max(0, activeNoteIndex.value)
     return paceNotes.value.slice(Math.max(0, index - 1), index + 8)
   })
+  const activeWeather = computed(() => {
+    const samples = routeWeatherSamples.value
+    if (samples.length === 0) return null
+
+    return samples.reduce((best, sample) =>
+      Math.abs(sample.distance - activeDistanceMeters.value) < Math.abs(best.distance - activeDistanceMeters.value)
+        ? sample
+        : best,
+    samples[0])
+  })
+  const upcomingWeatherAlert = computed(() =>
+    routeWeatherSamples.value.find((sample) =>
+      sample.distance >= activeDistanceMeters.value &&
+      sample.severity !== 'normal',
+    ) ?? null,
+  )
   const ghostTargetSeconds = computed(() =>
     route.value ? route.value.distance / (Math.max(1, display.value.ghostTargetKph) / 3.6) : 0,
   )
@@ -690,6 +713,11 @@ export const useStageStore = defineStore('stage', () => {
     route.value = null
     paceNotes.value = []
     selectedNoteId.value = ''
+    routeWeatherRequestId += 1
+    routeWeatherSamples.value = []
+    routeWeatherLoading.value = false
+    routeWeatherError.value = ''
+    routeWeatherUpdatedAt.value = 0
     resetSimulation()
     resetDriveAttempt()
   }
@@ -717,10 +745,38 @@ export const useStageStore = defineStore('stage', () => {
       paceNotes.value = generatePaceNotes(nextRoute)
       selectedNoteId.value = paceNotes.value[1]?.id ?? paceNotes.value[0]?.id ?? ''
       resetSimulation()
+      void refreshRouteWeather(nextRoute)
     } catch (error) {
       routeError.value = error instanceof Error ? error.message : 'Routing failed.'
     } finally {
       loadingRoute.value = false
+    }
+  }
+
+  async function refreshRouteWeather(targetRoute = route.value) {
+    if (!targetRoute) {
+      routeWeatherSamples.value = []
+      routeWeatherError.value = ''
+      routeWeatherUpdatedAt.value = 0
+      return
+    }
+
+    routeWeatherLoading.value = true
+    routeWeatherError.value = ''
+    const requestId = ++routeWeatherRequestId
+
+    try {
+      const samples = await fetchRouteWeather(targetRoute)
+      if (requestId !== routeWeatherRequestId) return
+      routeWeatherSamples.value = samples
+      routeWeatherUpdatedAt.value = Date.now()
+    } catch (error) {
+      if (requestId !== routeWeatherRequestId) return
+      routeWeatherSamples.value = []
+      routeWeatherUpdatedAt.value = 0
+      routeWeatherError.value = error instanceof Error ? error.message : 'Weather fetch failed.'
+    } finally {
+      if (requestId === routeWeatherRequestId) routeWeatherLoading.value = false
     }
   }
 
@@ -1270,6 +1326,10 @@ export const useStageStore = defineStore('stage', () => {
     selectedGhostRunId,
     obdTelemetry,
     phoneSensors,
+    routeWeatherSamples,
+    routeWeatherLoading,
+    routeWeatherError,
+    routeWeatherUpdatedAt,
     hasRoute,
     totalDistance,
     activeDistanceMeters,
@@ -1282,6 +1342,8 @@ export const useStageStore = defineStore('stage', () => {
     followingNote,
     previousNote,
     noteWindow,
+    activeWeather,
+    upcomingWeatherAlert,
     ghostTargetSeconds,
     ghostDistanceMeters,
     ghostCar,
@@ -1297,6 +1359,7 @@ export const useStageStore = defineStore('stage', () => {
     loadDemo,
     buildRoute,
     regenerateNotes,
+    refreshRouteWeather,
     updatePaceNote,
     addCustomNote,
     deletePaceNote,

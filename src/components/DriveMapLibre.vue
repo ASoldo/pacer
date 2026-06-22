@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import maplibregl from 'maplibre-gl'
 import type { Feature, FeatureCollection, LineString, Point } from 'geojson'
-import type { LatLng, MapOrientationMode, PaceNote, RouteInfo } from '../types'
+import type { LatLng, MapOrientationMode, PaceNote, RouteInfo, RouteWeatherSample } from '../types'
 import { bearingDegrees, cumulativeDistances } from '../utils/geo'
 import { paceCode, paceColor, paceDisplay } from '../utils/pace'
 
@@ -16,6 +16,7 @@ const props = defineProps<{
   orientationMode: MapOrientationMode
   driveRunning: boolean
   activeDistance: number
+  weatherSamples: RouteWeatherSample[]
   selectedNoteId: string
   showNoteMarkers: boolean
 }>()
@@ -41,6 +42,7 @@ const gateLineCount = ref(0)
 const gatePassedCount = ref(0)
 const gateGoodCount = ref(0)
 const gateLateCount = ref(0)
+const weatherFeatureCount = ref(0)
 
 let driveMap: maplibregl.Map | null = null
 let carMarker: maplibregl.Marker | null = null
@@ -53,6 +55,7 @@ let smoothCar: VisualCar | null = null
 let resizeObserver: ResizeObserver | null = null
 let lastRouteKey = ''
 let lastNoteKey = ''
+let lastWeatherKey = ''
 let lastGateKey = ''
 let lastGateRouteKey = ''
 let lastGateProgressDistance = 0
@@ -210,6 +213,16 @@ function gateColor(status: GateStatus, current: boolean) {
   if (status === 'good') return '#22c55e'
   if (status === 'late') return '#ef4444'
   return current ? '#facc15' : '#94a3b8'
+}
+
+function weatherColor(sample: RouteWeatherSample) {
+  if (sample.severity === 'severe') return '#ef4444'
+  if (sample.severity === 'caution') {
+    if (sample.risk === 'wet') return '#38bdf8'
+    if (sample.risk === 'wind') return '#facc15'
+    return '#f59e0b'
+  }
+  return '#22c55e'
 }
 
 function setSourceData(sourceId: string, data: FeatureCollection) {
@@ -382,6 +395,24 @@ function noteFeatures() {
   )
 }
 
+function weatherFeatures() {
+  return props.weatherSamples.map((sample) =>
+    pointFeature(sample, {
+      id: sample.id,
+      kind: 'route-weather',
+      distance: sample.distance,
+      risk: sample.risk,
+      severity: sample.severity,
+      summary: sample.summary,
+      temperatureC: Math.round(sample.temperatureC),
+      windGustKph: Math.round(sample.windGustKph),
+      precipitationMm: Number(sample.precipitationMm.toFixed(1)),
+      color: weatherColor(sample),
+      active: Math.abs(sample.distance - props.activeDistance) < Math.max(250, routeTotal.value / 28),
+    }),
+  )
+}
+
 function syncRouteSources(force = false) {
   if (!driveMap || !mapLoaded.value) return
   if (!props.route) {
@@ -476,6 +507,22 @@ function syncNoteSource(force = false) {
   })
 }
 
+function syncWeatherSource(force = false) {
+  if (!driveMap || !mapLoaded.value) return
+  const key = props.weatherSamples
+    .map((sample) => `${sample.id}:${sample.severity}:${sample.lat.toFixed(5)}:${sample.lng.toFixed(5)}:${Math.round(sample.distance)}:${Math.round(sample.fetchedAt / 60_000)}`)
+    .join('|') + `:${Math.floor(props.activeDistance / 250)}`
+  if (!force && key === lastWeatherKey) return
+  lastWeatherKey = key
+
+  const features = weatherFeatures()
+  weatherFeatureCount.value = features.length
+  setSourceData('drive-weather', {
+    type: 'FeatureCollection',
+    features,
+  })
+}
+
 function mapLibreTileUrl() {
   const subdomain = tileSubdomains[0] ?? ''
   return tileUrl.replace('{s}', subdomain).replace('{r}', '')
@@ -522,6 +569,7 @@ function addDriveLayers() {
   addGeoJsonSource('drive-route-segments')
   addGeoJsonSource('drive-route-kerbs')
   addGeoJsonSource('drive-route-gates')
+  addGeoJsonSource('drive-weather')
   addGeoJsonSource('drive-notes')
 
   if (!driveMap.getLayer('drive-route-shadow')) {
@@ -660,6 +708,21 @@ function addDriveLayers() {
         'circle-stroke-width': ['case', ['==', ['get', 'status'], 'pending'], 1.8, 2.4],
         'circle-stroke-color': '#f8fafc',
         'circle-opacity': ['case', ['==', ['get', 'status'], 'pending'], 0.82, 0.98],
+      },
+    })
+  }
+
+  if (!driveMap.getLayer('drive-weather-circles')) {
+    driveMap.addLayer({
+      id: 'drive-weather-circles',
+      type: 'circle',
+      source: 'drive-weather',
+      paint: {
+        'circle-color': ['get', 'color'],
+        'circle-radius': ['case', ['boolean', ['get', 'active'], false], 8.5, 6.4],
+        'circle-stroke-width': ['case', ['==', ['get', 'severity'], 'normal'], 2.1, 3],
+        'circle-stroke-color': '#f8fafc',
+        'circle-opacity': ['case', ['==', ['get', 'severity'], 'normal'], 0.78, 0.98],
       },
     })
   }
@@ -838,6 +901,7 @@ function createMap() {
     syncTargetCar()
     syncRouteSources(true)
     syncGateSource(true)
+    syncWeatherSource(true)
     syncNoteSource(true)
     updateGhostMarker()
     if (smoothCar) {
@@ -899,6 +963,10 @@ watch(() => [props.paceNotes, props.selectedNoteId, props.activeDistance, props.
   syncNoteSource()
 }, { deep: true, flush: 'post' })
 
+watch(() => [props.weatherSamples, props.activeDistance], () => {
+  syncWeatherSource()
+}, { deep: true, flush: 'post' })
+
 watch(() => props.orientationMode, () => {
   if (smoothCar) updateCamera(smoothCar)
 })
@@ -906,6 +974,7 @@ watch(() => props.orientationMode, () => {
 watch(mapLoaded, () => {
   syncRouteSources(true)
   syncGateSource(true)
+  syncWeatherSource(true)
   syncNoteSource(true)
   updateGhostMarker()
 })
@@ -935,6 +1004,7 @@ const rendererClass = computed(() => ({
     :data-gate-passed-count="gatePassedCount"
     :data-gate-good-count="gateGoodCount"
     :data-gate-late-count="gateLateCount"
+    :data-weather-feature-count="weatherFeatureCount"
     data-testid="map-canvas"
   >
     <div

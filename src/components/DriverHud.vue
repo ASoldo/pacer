@@ -4,6 +4,7 @@ import {
   CircleAlert,
   CircleCheck,
   CirclePause,
+  CloudSun,
   Compass,
   Flag,
   Gauge,
@@ -29,6 +30,7 @@ import type {
   LocationTrackingStatus,
   MapOrientationMode,
   PaceNote,
+  RouteWeatherSample,
   VehicleTelemetry,
 } from '../types'
 import { formatMeters } from '../utils/geo'
@@ -68,6 +70,10 @@ const props = defineProps<{
   speechError: string
   spokenNoteIds: string[]
   completedNoteIds: string[]
+  currentWeather: RouteWeatherSample | null
+  upcomingWeatherAlert: RouteWeatherSample | null
+  weatherLoading: boolean
+  weatherError: string
 }>()
 
 const emit = defineEmits<{
@@ -261,6 +267,36 @@ const speechStatusTitle = computed(() => {
   if (props.currentNote?.caution) return 'Caution'
   return props.speaking ? 'Speaking' : 'Standby'
 })
+const weatherBadgeSample = computed(() => props.upcomingWeatherAlert ?? props.currentWeather)
+const weatherBadgeVariant = computed(() => {
+  const sample = weatherBadgeSample.value
+  if (props.weatherError) return 'destructive'
+  if (props.weatherLoading) return 'info'
+  if (!sample) return 'muted'
+  if (sample.severity === 'severe') return 'destructive'
+  if (sample.severity === 'caution') return 'warning'
+  return 'success'
+})
+const weatherBadgeText = computed(() => {
+  const sample = weatherBadgeSample.value
+  if (props.weatherError) return 'Weather error'
+  if (props.weatherLoading && !sample) return 'Weather'
+  if (!sample) return 'Weather --'
+  if (sample === props.upcomingWeatherAlert && sample.distance > props.activeDistanceMeters + 120) {
+    return `${formatCompactMeters(sample.distance - props.activeDistanceMeters)} ${sample.risk}`
+  }
+  return sample.summary
+})
+const weatherBadgeTitle = computed(() => {
+  const sample = weatherBadgeSample.value
+  if (props.weatherError) return props.weatherError
+  if (props.weatherLoading && !sample) return 'Loading Open-Meteo route weather'
+  if (!sample) return 'No route weather loaded'
+  const distance = sample.distance > props.activeDistanceMeters
+    ? `${formatCompactMeters(sample.distance - props.activeDistanceMeters)} ahead`
+    : 'near current position'
+  return `${sample.summary} (${sample.severity}, ${distance}, Open-Meteo)`
+})
 const ghostDeltaVariant = computed(() => (props.ghostDeltaSeconds <= 0 ? 'success' : 'destructive'))
 const driveStatusLabel = computed(() => {
   if (props.running || props.attemptStatus === 'running') return 'Recording'
@@ -434,6 +470,16 @@ function timelineIconSize(note: PaceNote): 'sm' | 'md' {
             <Megaphone v-else-if="props.speaking" :size="14" />
             <MegaphoneOff v-else :size="14" />
             <span>{{ speechStatusLabel }}</span>
+          </Badge>
+          <Badge
+            as="span"
+            :variant="weatherBadgeVariant"
+            class="h-6 gap-1.5 rounded-md px-2 text-[0.65rem] font-semibold"
+            :title="weatherBadgeTitle"
+            data-testid="drive-weather-badge"
+          >
+            <CloudSun :size="14" />
+            <span>{{ weatherBadgeText }}</span>
           </Badge>
         </div>
       </div>

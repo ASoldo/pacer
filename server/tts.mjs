@@ -451,6 +451,57 @@ app.post('/api/tts', async (request, response) => {
   }
 })
 
+function coordinateList(value, min, max) {
+  return String(value ?? '')
+    .split(',')
+    .map((entry) => Number(entry.trim()))
+    .filter((entry) => Number.isFinite(entry) && entry >= min && entry <= max)
+    .slice(0, 20)
+}
+
+app.get('/api/weather/route', async (request, response) => {
+  const latitudes = coordinateList(request.query.latitude, -90, 90)
+  const longitudes = coordinateList(request.query.longitude, -180, 180)
+
+  if (latitudes.length === 0 || latitudes.length !== longitudes.length) {
+    response.status(400).json({ error: 'matching latitude and longitude coordinate lists are required' })
+    return
+  }
+
+  const url = new URL('https://api.open-meteo.com/v1/forecast')
+  url.searchParams.set('latitude', latitudes.map((value) => value.toFixed(5)).join(','))
+  url.searchParams.set('longitude', longitudes.map((value) => value.toFixed(5)).join(','))
+  url.searchParams.set('current', [
+    'temperature_2m',
+    'relative_humidity_2m',
+    'precipitation',
+    'rain',
+    'showers',
+    'snowfall',
+    'weather_code',
+    'cloud_cover',
+    'wind_speed_10m',
+    'wind_direction_10m',
+    'wind_gusts_10m',
+  ].join(','))
+  url.searchParams.set('wind_speed_unit', 'kmh')
+  url.searchParams.set('precipitation_unit', 'mm')
+  url.searchParams.set('timezone', 'auto')
+
+  try {
+    const upstream = await fetch(url, { headers: { accept: 'application/json' } })
+    if (!upstream.ok) {
+      response.status(502).json({ error: `Open-Meteo returned ${upstream.status}` })
+      return
+    }
+
+    response.setHeader('Cache-Control', 'max-age=300')
+    response.json(await upstream.json())
+  } catch (error) {
+    response.status(502).json({ error: error instanceof Error ? error.message : 'Weather service unavailable' })
+  }
+})
+
 app.get('/version.json', (_request, response, next) => {
   response.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
   response.setHeader('Pragma', 'no-cache')
