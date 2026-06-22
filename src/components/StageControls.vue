@@ -9,6 +9,7 @@ import {
   RefreshCw,
   Route,
   RotateCcw,
+  Search,
   Trash2,
 } from '@lucide/vue'
 import { useStageStore } from '../stores/stage'
@@ -36,6 +37,8 @@ import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 const stage = useStageStore()
 const circuitLapInput = ref(String(stage.circuitLapCount))
 const circuitLapFocused = ref(false)
+const locationQuery = ref('')
+let searchTimer: number | null = null
 
 watch(
   () => stage.circuitLapCount,
@@ -43,6 +46,14 @@ watch(
     if (!circuitLapFocused.value) circuitLapInput.value = String(value)
   },
 )
+
+watch(locationQuery, (query) => {
+  if (searchTimer !== null) window.clearTimeout(searchTimer)
+  searchTimer = window.setTimeout(() => {
+    searchTimer = null
+    void stage.searchRouteLocations(query)
+  }, 320)
+})
 
 function setRouteMode(value: unknown) {
   if (value === 'point-to-point' || value === 'closed-circuit') {
@@ -89,6 +100,14 @@ function addCurrentLocation() {
       maximumAge: 5_000,
     },
   )
+}
+
+function addSearchResult(resultId: string) {
+  const result = stage.locationSearchResults.find((item) => item.id === resultId)
+  if (!result) return
+
+  stage.addSearchResultWaypoint(result)
+  locationQuery.value = ''
 }
 </script>
 
@@ -145,6 +164,53 @@ function addCurrentLocation() {
             Circuit
           </ToggleGroupItem>
         </ToggleGroup>
+
+        <div class="grid gap-2">
+          <Label for="route-location-search" class="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+            Search points
+          </Label>
+          <div class="relative">
+            <Search
+              :size="15"
+              class="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground"
+            />
+            <Input
+              id="route-location-search"
+              v-model="locationQuery"
+              class="pl-8"
+              autocomplete="off"
+              placeholder="Street, place, junction"
+              title="Search for route point"
+              data-testid="route-location-search"
+              @keydown.enter.prevent="stage.locationSearchResults[0] && addSearchResult(stage.locationSearchResults[0].id)"
+            />
+          </div>
+          <div
+            v-if="locationQuery.trim().length >= 3 || stage.locationSearchLoading || stage.locationSearchError"
+            class="grid gap-1"
+            data-testid="route-location-results"
+          >
+            <button
+              v-for="result in stage.locationSearchResults"
+              :key="result.id"
+              class="grid min-w-0 grid-cols-[auto_1fr] items-center gap-2 rounded-md border bg-card p-2 text-left text-xs transition hover:bg-muted/60"
+              type="button"
+              :title="result.label"
+              @click="addSearchResult(result.id)"
+            >
+              <MapPinPlus :size="15" class="text-primary" />
+              <span class="min-w-0">
+                <b class="block truncate text-foreground">{{ result.name }}</b>
+                <span class="block truncate text-muted-foreground">{{ result.label }}</span>
+              </span>
+            </button>
+            <p v-if="stage.locationSearchLoading" class="px-1 text-xs text-muted-foreground">Searching</p>
+            <p v-else-if="stage.locationSearchError" class="px-1 text-xs text-destructive">{{ stage.locationSearchError }}</p>
+            <p v-else-if="locationQuery.trim().length >= 3 && stage.locationSearchResults.length === 0" class="px-1 text-xs text-muted-foreground">
+              No results
+            </p>
+          </div>
+        </div>
 
         <div class="grid grid-cols-4 gap-2">
           <Button

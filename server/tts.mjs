@@ -24,6 +24,9 @@ const tlsPort = Number(process.env.TLS_PORT ?? 8443)
 const tlsCertPath = process.env.TLS_CERT_PATH
 const tlsKeyPath = process.env.TLS_KEY_PATH
 const app = express()
+const weatherCache = new Map()
+const weatherCacheMaxAgeMs = 5 * 60 * 1000
+const upstreamTimeoutMs = 12_000
 
 app.use(cors())
 app.use(express.json({ limit: '8kb' }))
@@ -451,6 +454,42 @@ app.post('/api/tts', async (request, response) => {
   }
 })
 
+app.get('/api/geocode/search', async (request, response) => {
+  const query = clean(request.query.q).slice(0, 160)
+  const limit = Math.min(Math.max(Number(request.query.limit) || 6, 1), 8)
+
+  if (query.length < 3) {
+    response.json({ results: [] })
+    return
+  }
+
+  const url = new URL('https://nominatim.openstreetmap.org/search')
+  url.searchParams.set('q', query)
+  url.searchParams.set('format', 'jsonv2')
+  url.searchParams.set('addressdetails', '1')
+  url.searchParams.set('limit', String(limit))
+  url.searchParams.set('accept-language', 'en')
+
+  try {
+    const upstream = await fetch(url, {
+      headers: {
+        accept: 'application/json',
+        'user-agent': 'RallyPacer/0.3.2 local-development',
+      },
+    })
+
+    if (!upstream.ok) {
+      response.status(502).json({ error: `Nominatim returned ${upstream.status}` })
+      return
+    }
+
+    response.setHeader('Cache-Control', 'max-age=3600')
+    response.json({ results: await upstream.json() })
+  } catch (error) {
+    response.status(502).json({ error: error instanceof Error ? error.message : 'Location search unavailable' })
+  }
+})
+
 function coordinateList(value, min, max) {
   return String(value ?? '')
     .split(',')
@@ -487,19 +526,61 @@ app.get('/api/weather/route', async (request, response) => {
   url.searchParams.set('wind_speed_unit', 'kmh')
   url.searchParams.set('precipitation_unit', 'mm')
   url.searchParams.set('timezone', 'auto')
+  const cacheKey = `${url.searchParams.get('latitude')}|${url.searchParams.get('longitude')}`
+  const cached = weatherCache.get(cacheKey)
 
+  if (cached && Date.now() - cached.at < weatherCacheMaxAgeMs) {
+    response.setHeader('Cache-Control', 'max-age=300')
+    response.setHeader('X-Weather-Cache', 'hit')
+    response.json(cached.payload)
+    return
+  }
+
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), upstreamTimeoutMs)
   try {
-    const upstream = await fetch(url, { headers: { accept: 'application/json' } })
+    const upstream = await fetch(url, {
+      signal: controller.signal,
+      headers: { accept: 'application/json' },
+    })
     if (!upstream.ok) {
+      if (cached) {
+        response.setHeader('Cache-Control', 'max-age=60')
+        response.setHeader('X-Weather-Cache', 'stale')
+        response.json(cached.payload)
+        return
+      }
+
       response.status(502).json({ error: `Open-Meteo returned ${upstream.status}` })
       return
     }
 
+    const payload = await upstream.json()
+    weatherCache.set(cacheKey, { at: Date.now(), payload })
     response.setHeader('Cache-Control', 'max-age=300')
-    response.json(await upstream.json())
+    response.setHeader('X-Weather-Cache', 'miss')
+    response.json(payload)
   } catch (error) {
+    if (cached) {
+      response.setHeader('Cache-Control', 'max-age=60')
+      response.setHeader('X-Weather-Cache', 'stale')
+      response.json(cached.payload)
+      return
+    }
+
     response.status(502).json({ error: error instanceof Error ? error.message : 'Weather service unavailable' })
+  } finally {
+    clearTimeout(timeout)
   }
+})
+
+app.get('/api/road-alerts/route', (_request, response) => {
+  response.setHeader('Cache-Control', 'max-age=120')
+  response.json({
+    source: 'hak',
+    status: 'unconfigured',
+    alerts: [],
+  })
 })
 
 app.get('/version.json', (_request, response, next) => {

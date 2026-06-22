@@ -2,6 +2,8 @@ import type { LatLng, RouteInfo, RouteWeatherRisk, RouteWeatherSample, RouteWeat
 import { cumulativeDistances, pointAlongCumulativeRoute } from '../utils/geo'
 
 const routeWeatherSampleCount = 10
+const routeWeatherTimeoutMs = 12_000
+const routeWeatherMaxAttempts = 3
 
 type OpenMeteoCurrent = {
   time?: string
@@ -67,7 +69,7 @@ function classifyRisk(current: OpenMeteoCurrent): { risk: RouteWeatherRisk; seve
     return { risk: 'fog', severity: code === 48 ? 'severe' : 'caution' }
   }
 
-  if (windGust >= 45 || windSpeed >= 35) {
+  if (windGust >= 40 || windSpeed >= 32) {
     return { risk: 'wind', severity: windGust >= 62 || windSpeed >= 48 ? 'severe' : 'caution' }
   }
 
@@ -104,6 +106,40 @@ function sampleRoute(route: RouteInfo) {
   }).filter((sample): sample is { id: string; index: number; distance: number; point: LatLng } => Boolean(sample.point))
 }
 
+function wait(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms))
+}
+
+async function fetchWeatherPayload(url: URL) {
+  let lastError: unknown = null
+
+  for (let attempt = 1; attempt <= routeWeatherMaxAttempts; attempt += 1) {
+    const controller = new AbortController()
+    const timeout = window.setTimeout(() => controller.abort(), routeWeatherTimeoutMs)
+
+    try {
+      const response = await fetch(url, {
+        signal: controller.signal,
+        cache: 'no-store',
+        headers: {
+          accept: 'application/json',
+        },
+      })
+
+      if (!response.ok) throw new Error(`Weather fetch failed (${response.status})`)
+      return (await response.json()) as OpenMeteoResponse | OpenMeteoResponse[]
+    } catch (error) {
+      lastError = error
+      if (attempt === routeWeatherMaxAttempts) break
+      await wait(300 * attempt)
+    } finally {
+      window.clearTimeout(timeout)
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error('Weather fetch failed.')
+}
+
 export async function fetchRouteWeather(route: RouteInfo): Promise<RouteWeatherSample[]> {
   const samples = sampleRoute(route)
   if (samples.length === 0) return []
@@ -112,10 +148,7 @@ export async function fetchRouteWeather(route: RouteInfo): Promise<RouteWeatherS
   url.searchParams.set('latitude', samples.map((sample) => sample.point.lat.toFixed(5)).join(','))
   url.searchParams.set('longitude', samples.map((sample) => sample.point.lng.toFixed(5)).join(','))
 
-  const response = await fetch(url)
-  if (!response.ok) throw new Error(`Weather fetch failed (${response.status})`)
-
-  const payload = (await response.json()) as OpenMeteoResponse | OpenMeteoResponse[]
+  const payload = await fetchWeatherPayload(url)
   const results = Array.isArray(payload) ? payload : [payload]
   const fetchedAt = Date.now()
 

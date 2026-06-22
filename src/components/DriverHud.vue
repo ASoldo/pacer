@@ -15,12 +15,21 @@ import {
   Minimize2,
   Navigation,
   Pause,
+  RefreshCw,
   Timer,
   Volume2,
 } from '@lucide/vue'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import PaceCallIcon from './PaceCallIcon.vue'
 import VehicleSignal from './VehicleSignal.vue'
 import type {
@@ -30,6 +39,7 @@ import type {
   LocationTrackingStatus,
   MapOrientationMode,
   PaceNote,
+  RouteRoadAlert,
   RouteWeatherSample,
   VehicleTelemetry,
 } from '../types'
@@ -74,12 +84,18 @@ const props = defineProps<{
   upcomingWeatherAlert: RouteWeatherSample | null
   weatherLoading: boolean
   weatherError: string
+  activeRoadAlert: RouteRoadAlert | null
+  upcomingRoadAlert: RouteRoadAlert | null
+  roadAlertsLoading: boolean
+  roadAlertsError: string
 }>()
 
 const emit = defineEmits<{
   'toggle-drive': []
   'toggle-live-drive': []
   'toggle-map-orientation': []
+  'refresh-weather': []
+  'refresh-road-alerts': []
   speak: []
 }>()
 
@@ -270,8 +286,8 @@ const speechStatusTitle = computed(() => {
 const weatherBadgeSample = computed(() => props.upcomingWeatherAlert ?? props.currentWeather)
 const weatherBadgeVariant = computed(() => {
   const sample = weatherBadgeSample.value
-  if (props.weatherError) return 'destructive'
   if (props.weatherLoading) return 'info'
+  if (props.weatherError && !sample) return 'muted'
   if (!sample) return 'muted'
   if (sample.severity === 'severe') return 'destructive'
   if (sample.severity === 'caution') return 'warning'
@@ -279,8 +295,8 @@ const weatherBadgeVariant = computed(() => {
 })
 const weatherBadgeText = computed(() => {
   const sample = weatherBadgeSample.value
-  if (props.weatherError) return 'Weather error'
   if (props.weatherLoading && !sample) return 'Weather'
+  if (props.weatherError && !sample) return 'Weather --'
   if (!sample) return 'Weather --'
   if (sample === props.upcomingWeatherAlert && sample.distance > props.activeDistanceMeters + 120) {
     return `${formatCompactMeters(sample.distance - props.activeDistanceMeters)} ${sample.risk}`
@@ -296,6 +312,36 @@ const weatherBadgeTitle = computed(() => {
     ? `${formatCompactMeters(sample.distance - props.activeDistanceMeters)} ahead`
     : 'near current position'
   return `${sample.summary} (${sample.severity}, ${distance}, Open-Meteo)`
+})
+const roadAlertBadgeSample = computed(() => props.upcomingRoadAlert ?? props.activeRoadAlert)
+const roadAlertBadgeVariant = computed(() => {
+  const alert = roadAlertBadgeSample.value
+  if (props.roadAlertsLoading) return 'info'
+  if (props.roadAlertsError && !alert) return 'muted'
+  if (!alert) return 'success'
+  if (alert.severity === 'severe') return 'destructive'
+  if (alert.severity === 'caution') return 'warning'
+  return 'info'
+})
+const roadAlertBadgeText = computed(() => {
+  const alert = roadAlertBadgeSample.value
+  if (props.roadAlertsLoading && !alert) return 'HAK'
+  if (props.roadAlertsError && !alert) return 'HAK --'
+  if (!alert) return 'HAK clear'
+  if (alert === props.upcomingRoadAlert && alert.distance > props.activeDistanceMeters + 120) {
+    return `${formatCompactMeters(alert.distance - props.activeDistanceMeters)} ${alert.kind}`
+  }
+  return alert.title
+})
+const roadAlertBadgeTitle = computed(() => {
+  const alert = roadAlertBadgeSample.value
+  if (props.roadAlertsError) return props.roadAlertsError
+  if (props.roadAlertsLoading && !alert) return 'Loading route road alerts'
+  if (!alert) return 'No active route road alerts'
+  const distance = alert.distance > props.activeDistanceMeters
+    ? `${formatCompactMeters(alert.distance - props.activeDistanceMeters)} ahead`
+    : 'near current position'
+  return `${alert.title}: ${alert.detail} (${distance})`
 })
 const ghostDeltaVariant = computed(() => (props.ghostDeltaSeconds <= 0 ? 'success' : 'destructive'))
 const driveStatusLabel = computed(() => {
@@ -471,16 +517,6 @@ function timelineIconSize(note: PaceNote): 'sm' | 'md' {
             <MegaphoneOff v-else :size="14" />
             <span>{{ speechStatusLabel }}</span>
           </Badge>
-          <Badge
-            as="span"
-            :variant="weatherBadgeVariant"
-            class="h-6 gap-1.5 rounded-md px-2 text-[0.65rem] font-semibold"
-            :title="weatherBadgeTitle"
-            data-testid="drive-weather-badge"
-          >
-            <CloudSun :size="14" />
-            <span>{{ weatherBadgeText }}</span>
-          </Badge>
         </div>
       </div>
 
@@ -518,7 +554,108 @@ function timelineIconSize(note: PaceNote): 'sm' | 'md' {
     </Card>
 
     <section class="wrc-bottom-panel pointer-events-auto">
-      <VehicleSignal fab />
+      <div class="wrc-drive-badge-row">
+        <VehicleSignal fab />
+        <div class="wrc-route-alert-badges" aria-label="Route condition badges">
+          <DropdownMenu :modal="false">
+            <DropdownMenuTrigger as-child>
+              <Button
+                variant="outline"
+                size="icon-lg"
+                class="wrc-route-alert-button"
+                :data-tone="weatherBadgeVariant"
+                :aria-label="`Weather, ${weatherBadgeText}`"
+                :title="weatherBadgeTitle"
+                type="button"
+                data-testid="drive-weather-badge"
+              >
+                <CloudSun :size="18" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent side="top" align="end" class="w-72 p-2" data-testid="drive-weather-menu">
+              <DropdownMenuLabel class="grid gap-2 px-2 py-2 text-foreground">
+                <span class="flex min-w-0 items-center gap-2">
+                  <CloudSun :size="18" class="text-primary" />
+                  <span class="grid min-w-0 gap-0.5">
+                    <strong class="truncate text-sm font-semibold">Weather</strong>
+                    <small class="truncate text-xs text-muted-foreground">Open-Meteo route sample</small>
+                  </span>
+                  <Badge :variant="weatherBadgeVariant" class="ml-auto">{{ weatherBadgeText }}</Badge>
+                </span>
+              </DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              <div class="grid gap-2 px-2 py-2 text-xs">
+                <div class="flex items-center justify-between gap-3">
+                  <span class="text-muted-foreground">Status</span>
+                  <span class="truncate font-medium">{{ weatherBadgeTitle }}</span>
+                </div>
+                <div v-if="weatherBadgeSample" class="flex items-center justify-between gap-3">
+                  <span class="text-muted-foreground">Wind gust</span>
+                  <span class="truncate font-medium">{{ Math.round(weatherBadgeSample.windGustKph) }} km/h</span>
+                </div>
+                <div v-if="weatherBadgeSample" class="flex items-center justify-between gap-3">
+                  <span class="text-muted-foreground">Precipitation</span>
+                  <span class="truncate font-medium">{{ weatherBadgeSample.precipitationMm.toFixed(1) }} mm</span>
+                </div>
+              </div>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem @select.prevent="emit('refresh-weather')">
+                <RefreshCw :size="14" />
+                Refresh weather
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+
+          <DropdownMenu :modal="false">
+            <DropdownMenuTrigger as-child>
+              <Button
+                variant="outline"
+                size="icon-lg"
+                class="wrc-route-alert-button"
+                :data-tone="roadAlertBadgeVariant"
+                :aria-label="`HAK, ${roadAlertBadgeText}`"
+                :title="roadAlertBadgeTitle"
+                type="button"
+                data-testid="drive-hak-badge"
+              >
+                <CircleAlert :size="18" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent side="top" align="end" class="w-72 p-2" data-testid="drive-hak-menu">
+              <DropdownMenuLabel class="grid gap-2 px-2 py-2 text-foreground">
+                <span class="flex min-w-0 items-center gap-2">
+                  <CircleAlert :size="18" class="text-primary" />
+                  <span class="grid min-w-0 gap-0.5">
+                    <strong class="truncate text-sm font-semibold">HAK road watch</strong>
+                    <small class="truncate text-xs text-muted-foreground">Route obstacles and road alerts</small>
+                  </span>
+                  <Badge :variant="roadAlertBadgeVariant" class="ml-auto">{{ roadAlertBadgeText }}</Badge>
+                </span>
+              </DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              <div class="grid gap-2 px-2 py-2 text-xs">
+                <div class="flex items-center justify-between gap-3">
+                  <span class="text-muted-foreground">Status</span>
+                  <span class="truncate font-medium">{{ roadAlertBadgeTitle }}</span>
+                </div>
+                <div v-if="roadAlertBadgeSample" class="flex items-center justify-between gap-3">
+                  <span class="text-muted-foreground">Severity</span>
+                  <span class="truncate font-medium">{{ roadAlertBadgeSample.severity }}</span>
+                </div>
+                <div v-if="roadAlertBadgeSample" class="flex items-center justify-between gap-3">
+                  <span class="text-muted-foreground">Source</span>
+                  <span class="truncate font-medium">{{ roadAlertBadgeSample.source }}</span>
+                </div>
+              </div>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem @select.prevent="emit('refresh-road-alerts')">
+                <RefreshCw :size="14" />
+                Refresh road alerts
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      </div>
       <Card
         size="sm"
         class="wrc-drive-deck border-border/80 bg-card text-card-foreground shadow-xl"

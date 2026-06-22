@@ -11,6 +11,14 @@ export type StagePoint = LatLng & {
   name: string
 }
 
+export type LocationSearchResult = LatLng & {
+  id: string
+  label: string
+  name: string
+  category: string
+  source: 'nominatim'
+}
+
 export type RouteStep = {
   distance: number
   duration: number
@@ -59,6 +67,21 @@ export type RouteWeatherSample = LatLng & {
   summary: string
   source: 'open-meteo'
   fetchedAt: number
+}
+
+export type RouteRoadAlertKind = 'traffic' | 'collision' | 'closure' | 'works' | 'weather' | 'obstacle'
+
+export type RouteRoadAlertSeverity = 'info' | 'caution' | 'severe'
+
+export type RouteRoadAlert = LatLng & {
+  id: string
+  distance: number
+  kind: RouteRoadAlertKind
+  severity: RouteRoadAlertSeverity
+  title: string
+  detail: string
+  source: 'hak' | 'route-weather'
+  updatedAt: number
 }
 
 export type PaceNoteKind = 'start' | 'finish' | 'corner' | 'junction' | 'custom'

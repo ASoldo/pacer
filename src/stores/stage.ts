@@ -8,6 +8,7 @@ import type {
   DriveRunSummary,
   LatLng,
   LiveLocationState,
+  LocationSearchResult,
   ObdAdapterKind,
   ObdDiagnosticEntry,
   ObdProtocol,
@@ -18,6 +19,7 @@ import type {
   PhoneSensorState,
   RouteInfo,
   RouteMode,
+  RouteRoadAlert,
   RouteWeatherSample,
   SimulationState,
   SimulationSpeedMode,
@@ -31,6 +33,8 @@ import type {
 import { fetchRoute } from '../services/routing'
 import { preferredThrottle } from '../services/obd'
 import { generatePaceNotes } from '../services/paceNotes'
+import { searchLocations } from '../services/geocoding'
+import { fetchRouteRoadAlerts, roadAlertsFromWeather } from '../services/roadAlerts'
 import { fetchRouteWeather } from '../services/weather'
 import { canonicalVehicleVisualUrl, miniF55CooperSdVisuals, vehicleVisualsForProfile } from '../services/vehicleVisuals'
 import {
@@ -373,7 +377,16 @@ export const useStageStore = defineStore('stage', () => {
   const routeWeatherLoading = ref(false)
   const routeWeatherError = ref('')
   const routeWeatherUpdatedAt = ref(0)
+  const routeRoadAlerts = ref<RouteRoadAlert[]>([])
+  const routeRoadAlertsLoading = ref(false)
+  const routeRoadAlertsError = ref('')
+  const routeRoadAlertsUpdatedAt = ref(0)
+  const locationSearchResults = ref<LocationSearchResult[]>([])
+  const locationSearchLoading = ref(false)
+  const locationSearchError = ref('')
   let routeWeatherRequestId = 0
+  let routeRoadAlertsRequestId = 0
+  let locationSearchRequestId = 0
 
   const hasRoute = computed(() => Boolean(route.value && route.value.geometry.length > 1))
   const totalDistance = computed(() => route.value?.distance ?? 0)
@@ -447,6 +460,22 @@ export const useStageStore = defineStore('stage', () => {
     routeWeatherSamples.value.find((sample) =>
       sample.distance >= activeDistanceMeters.value &&
       sample.severity !== 'normal',
+    ) ?? null,
+  )
+  const activeRoadAlert = computed(() => {
+    const alerts = routeRoadAlerts.value
+    if (alerts.length === 0) return null
+
+    return alerts.reduce((best, alert) =>
+      Math.abs(alert.distance - activeDistanceMeters.value) < Math.abs(best.distance - activeDistanceMeters.value)
+        ? alert
+        : best,
+    alerts[0])
+  })
+  const upcomingRoadAlert = computed(() =>
+    routeRoadAlerts.value.find((alert) =>
+      alert.distance >= activeDistanceMeters.value &&
+      alert.distance - activeDistanceMeters.value <= 2_500,
     ) ?? null,
   )
   const ghostTargetSeconds = computed(() =>
@@ -686,17 +715,28 @@ export const useStageStore = defineStore('stage', () => {
     return Math.min(Math.max(nextDistance, 0), totalDistance.value)
   }
 
-  function addWaypoint(point: LatLng) {
+  function addWaypoint(point: LatLng, name = '') {
     const next = [
       ...waypoints.value,
       {
         id: id(),
-        name: '',
+        name,
         lat: point.lat,
         lng: point.lng,
       },
     ]
-    waypoints.value = renamePoints(next, routeMode.value)
+    waypoints.value = renamePoints(next, routeMode.value).map((entry, index) => {
+      if (index < waypoints.value.length) return { ...entry, name: waypoints.value[index]?.name || entry.name }
+      return {
+        ...entry,
+        name: name.trim() ? `${entry.name}: ${name.trim()}` : entry.name,
+      }
+    })
+    clearRoute()
+  }
+
+  function addSearchResultWaypoint(result: LocationSearchResult) {
+    addWaypoint({ lat: result.lat, lng: result.lng }, result.name)
   }
 
   function removeWaypoint(pointId: string) {
@@ -718,6 +758,11 @@ export const useStageStore = defineStore('stage', () => {
     routeWeatherLoading.value = false
     routeWeatherError.value = ''
     routeWeatherUpdatedAt.value = 0
+    routeRoadAlertsRequestId += 1
+    routeRoadAlerts.value = []
+    routeRoadAlertsLoading.value = false
+    routeRoadAlertsError.value = ''
+    routeRoadAlertsUpdatedAt.value = 0
     resetSimulation()
     resetDriveAttempt()
   }
@@ -746,6 +791,7 @@ export const useStageStore = defineStore('stage', () => {
       selectedNoteId.value = paceNotes.value[1]?.id ?? paceNotes.value[0]?.id ?? ''
       resetSimulation()
       void refreshRouteWeather(nextRoute)
+      void refreshRouteRoadAlerts(nextRoute, [])
     } catch (error) {
       routeError.value = error instanceof Error ? error.message : 'Routing failed.'
     } finally {
@@ -770,6 +816,7 @@ export const useStageStore = defineStore('stage', () => {
       if (requestId !== routeWeatherRequestId) return
       routeWeatherSamples.value = samples
       routeWeatherUpdatedAt.value = Date.now()
+      void refreshRouteRoadAlerts(targetRoute, samples)
     } catch (error) {
       if (requestId !== routeWeatherRequestId) return
       routeWeatherSamples.value = []
@@ -777,6 +824,60 @@ export const useStageStore = defineStore('stage', () => {
       routeWeatherError.value = error instanceof Error ? error.message : 'Weather fetch failed.'
     } finally {
       if (requestId === routeWeatherRequestId) routeWeatherLoading.value = false
+    }
+  }
+
+  async function refreshRouteRoadAlerts(targetRoute = route.value, weatherSamples = routeWeatherSamples.value) {
+    if (!targetRoute) {
+      routeRoadAlerts.value = []
+      routeRoadAlertsError.value = ''
+      routeRoadAlertsUpdatedAt.value = 0
+      return
+    }
+
+    routeRoadAlertsLoading.value = true
+    routeRoadAlertsError.value = ''
+    const requestId = ++routeRoadAlertsRequestId
+
+    try {
+      const alerts = await fetchRouteRoadAlerts(targetRoute, weatherSamples)
+      if (requestId !== routeRoadAlertsRequestId) return
+      routeRoadAlerts.value = alerts
+      routeRoadAlertsUpdatedAt.value = Date.now()
+    } catch {
+      if (requestId !== routeRoadAlertsRequestId) return
+      routeRoadAlerts.value = roadAlertsFromWeather(weatherSamples)
+      routeRoadAlertsUpdatedAt.value = Date.now()
+      routeRoadAlertsError.value = ''
+    } finally {
+      if (requestId === routeRoadAlertsRequestId) routeRoadAlertsLoading.value = false
+    }
+  }
+
+  async function searchRouteLocations(query: string) {
+    const trimmed = query.trim()
+    locationSearchError.value = ''
+
+    if (trimmed.length < 3) {
+      locationSearchRequestId += 1
+      locationSearchResults.value = []
+      locationSearchLoading.value = false
+      return
+    }
+
+    locationSearchLoading.value = true
+    const requestId = ++locationSearchRequestId
+
+    try {
+      const results = await searchLocations(trimmed)
+      if (requestId !== locationSearchRequestId) return
+      locationSearchResults.value = results
+    } catch (error) {
+      if (requestId !== locationSearchRequestId) return
+      locationSearchResults.value = []
+      locationSearchError.value = error instanceof Error ? error.message : 'Location search failed.'
+    } finally {
+      if (requestId === locationSearchRequestId) locationSearchLoading.value = false
     }
   }
 
@@ -1330,6 +1431,13 @@ export const useStageStore = defineStore('stage', () => {
     routeWeatherLoading,
     routeWeatherError,
     routeWeatherUpdatedAt,
+    routeRoadAlerts,
+    routeRoadAlertsLoading,
+    routeRoadAlertsError,
+    routeRoadAlertsUpdatedAt,
+    locationSearchResults,
+    locationSearchLoading,
+    locationSearchError,
     hasRoute,
     totalDistance,
     activeDistanceMeters,
@@ -1344,6 +1452,8 @@ export const useStageStore = defineStore('stage', () => {
     noteWindow,
     activeWeather,
     upcomingWeatherAlert,
+    activeRoadAlert,
+    upcomingRoadAlert,
     ghostTargetSeconds,
     ghostDistanceMeters,
     ghostCar,
@@ -1353,6 +1463,7 @@ export const useStageStore = defineStore('stage', () => {
     vehicleTitle,
     currentDriveRun,
     addWaypoint,
+    addSearchResultWaypoint,
     removeWaypoint,
     reverseWaypoints,
     clearStage,
@@ -1360,6 +1471,8 @@ export const useStageStore = defineStore('stage', () => {
     buildRoute,
     regenerateNotes,
     refreshRouteWeather,
+    refreshRouteRoadAlerts,
+    searchRouteLocations,
     updatePaceNote,
     addCustomNote,
     deletePaceNote,

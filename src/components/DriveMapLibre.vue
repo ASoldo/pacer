@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import maplibregl from 'maplibre-gl'
 import type { Feature, FeatureCollection, LineString, Point } from 'geojson'
-import type { LatLng, MapOrientationMode, PaceNote, RouteInfo, RouteWeatherSample } from '../types'
+import type { LatLng, MapOrientationMode, PaceNote, RouteInfo, RouteRoadAlert, RouteWeatherSample } from '../types'
 import { bearingDegrees, cumulativeDistances } from '../utils/geo'
 import { paceCode, paceColor, paceDisplay } from '../utils/pace'
 
@@ -17,6 +17,7 @@ const props = defineProps<{
   driveRunning: boolean
   activeDistance: number
   weatherSamples: RouteWeatherSample[]
+  roadAlerts: RouteRoadAlert[]
   selectedNoteId: string
   showNoteMarkers: boolean
 }>()
@@ -43,6 +44,7 @@ const gatePassedCount = ref(0)
 const gateGoodCount = ref(0)
 const gateLateCount = ref(0)
 const weatherFeatureCount = ref(0)
+const roadAlertFeatureCount = ref(0)
 
 let driveMap: maplibregl.Map | null = null
 let carMarker: maplibregl.Marker | null = null
@@ -56,6 +58,7 @@ let resizeObserver: ResizeObserver | null = null
 let lastRouteKey = ''
 let lastNoteKey = ''
 let lastWeatherKey = ''
+let lastRoadAlertsKey = ''
 let lastGateKey = ''
 let lastGateRouteKey = ''
 let lastGateProgressDistance = 0
@@ -223,6 +226,12 @@ function weatherColor(sample: RouteWeatherSample) {
     return '#f59e0b'
   }
   return '#22c55e'
+}
+
+function roadAlertColor(alert: RouteRoadAlert) {
+  if (alert.severity === 'severe') return '#ef4444'
+  if (alert.severity === 'caution') return '#f59e0b'
+  return '#38bdf8'
 }
 
 function setSourceData(sourceId: string, data: FeatureCollection) {
@@ -413,6 +422,22 @@ function weatherFeatures() {
   )
 }
 
+function roadAlertFeatures() {
+  return props.roadAlerts.map((alert) =>
+    pointFeature(alert, {
+      id: alert.id,
+      kind: alert.kind,
+      source: alert.source,
+      severity: alert.severity,
+      title: alert.title,
+      detail: alert.detail,
+      distance: alert.distance,
+      color: roadAlertColor(alert),
+      active: Math.abs(alert.distance - props.activeDistance) < Math.max(220, routeTotal.value / 32),
+    }),
+  )
+}
+
 function syncRouteSources(force = false) {
   if (!driveMap || !mapLoaded.value) return
   if (!props.route) {
@@ -523,6 +548,22 @@ function syncWeatherSource(force = false) {
   })
 }
 
+function syncRoadAlertSource(force = false) {
+  if (!driveMap || !mapLoaded.value) return
+  const key = props.roadAlerts
+    .map((alert) => `${alert.id}:${alert.severity}:${alert.lat.toFixed(5)}:${alert.lng.toFixed(5)}:${Math.round(alert.distance)}:${Math.round(alert.updatedAt / 60_000)}`)
+    .join('|') + `:${Math.floor(props.activeDistance / 180)}`
+  if (!force && key === lastRoadAlertsKey) return
+  lastRoadAlertsKey = key
+
+  const features = roadAlertFeatures()
+  roadAlertFeatureCount.value = features.length
+  setSourceData('drive-road-alerts', {
+    type: 'FeatureCollection',
+    features,
+  })
+}
+
 function mapLibreTileUrl() {
   const subdomain = tileSubdomains[0] ?? ''
   return tileUrl.replace('{s}', subdomain).replace('{r}', '')
@@ -570,6 +611,7 @@ function addDriveLayers() {
   addGeoJsonSource('drive-route-kerbs')
   addGeoJsonSource('drive-route-gates')
   addGeoJsonSource('drive-weather')
+  addGeoJsonSource('drive-road-alerts')
   addGeoJsonSource('drive-notes')
 
   if (!driveMap.getLayer('drive-route-shadow')) {
@@ -723,6 +765,39 @@ function addDriveLayers() {
         'circle-stroke-width': ['case', ['==', ['get', 'severity'], 'normal'], 2.1, 3],
         'circle-stroke-color': '#f8fafc',
         'circle-opacity': ['case', ['==', ['get', 'severity'], 'normal'], 0.78, 0.98],
+      },
+    })
+  }
+
+  if (!driveMap.getLayer('drive-road-alert-circles')) {
+    driveMap.addLayer({
+      id: 'drive-road-alert-circles',
+      type: 'circle',
+      source: 'drive-road-alerts',
+      paint: {
+        'circle-color': ['get', 'color'],
+        'circle-radius': ['case', ['boolean', ['get', 'active'], false], 11, 8.5],
+        'circle-stroke-width': 3,
+        'circle-stroke-color': '#f8fafc',
+        'circle-opacity': 0.96,
+      },
+    })
+  }
+
+  if (!driveMap.getLayer('drive-road-alert-labels')) {
+    driveMap.addLayer({
+      id: 'drive-road-alert-labels',
+      type: 'symbol',
+      source: 'drive-road-alerts',
+      layout: {
+        'text-field': '!',
+        'text-size': ['case', ['boolean', ['get', 'active'], false], 15, 12],
+        'text-font': ['Open Sans Bold', 'Arial Unicode MS Bold'],
+        'text-allow-overlap': true,
+        'text-ignore-placement': true,
+      },
+      paint: {
+        'text-color': '#0f172a',
       },
     })
   }
@@ -902,6 +977,7 @@ function createMap() {
     syncRouteSources(true)
     syncGateSource(true)
     syncWeatherSource(true)
+    syncRoadAlertSource(true)
     syncNoteSource(true)
     updateGhostMarker()
     if (smoothCar) {
@@ -967,6 +1043,10 @@ watch(() => [props.weatherSamples, props.activeDistance], () => {
   syncWeatherSource()
 }, { deep: true, flush: 'post' })
 
+watch(() => [props.roadAlerts, props.activeDistance], () => {
+  syncRoadAlertSource()
+}, { deep: true, flush: 'post' })
+
 watch(() => props.orientationMode, () => {
   if (smoothCar) updateCamera(smoothCar)
 })
@@ -975,6 +1055,7 @@ watch(mapLoaded, () => {
   syncRouteSources(true)
   syncGateSource(true)
   syncWeatherSource(true)
+  syncRoadAlertSource(true)
   syncNoteSource(true)
   updateGhostMarker()
 })
@@ -1005,6 +1086,7 @@ const rendererClass = computed(() => ({
     :data-gate-good-count="gateGoodCount"
     :data-gate-late-count="gateLateCount"
     :data-weather-feature-count="weatherFeatureCount"
+    :data-road-alert-feature-count="roadAlertFeatureCount"
     data-testid="map-canvas"
   >
     <div

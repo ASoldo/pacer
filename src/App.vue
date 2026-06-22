@@ -36,7 +36,7 @@ import { useScreenWakeLock } from './composables/useScreenWakeLock'
 import { useSpeech } from './composables/useSpeech'
 import { useStageStore } from './stores/stage'
 import { useUiStore, type EditorPanel, type StageSubPanel } from './stores/ui'
-import type { LatLng, PaceNote } from './types'
+import type { LatLng, PaceNote, RouteRoadAlert } from './types'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ButtonGroup, ButtonGroupText } from '@/components/ui/button-group'
@@ -91,6 +91,8 @@ let nextSpeechNoteIndex = 0
 let lastPreparedSpeechBucket = -1
 const speechRetryCounts = new Map<string, number>()
 const speechRetryTimers = new Map<string, number>()
+const spokenRoadAlertIds = ref<Set<string>>(new Set())
+const routeSummarySpokenKey = ref('')
 
 const currentNote = computed(() => stage.nextNote ?? null)
 const followingNote = computed(() => stage.followingNote ?? null)
@@ -137,6 +139,7 @@ function resetSpeechTracking() {
   speechRetryCounts.clear()
   speechRetryTimers.forEach((timer) => window.clearTimeout(timer))
   speechRetryTimers.clear()
+  spokenRoadAlertIds.value = new Set()
 }
 
 function isSpeechQueued(note: PaceNote) {
@@ -305,6 +308,89 @@ function speakNotesNow(notes: PaceNote[]) {
   stage.setSelectedNote(notes[0].id)
 }
 
+function alertSpeechSettings() {
+  return {
+    ...stage.speech,
+    delayMs: 0,
+    rate: 1,
+    pitch: 1,
+    volume: Math.min(1, Math.max(0.2, stage.speech.volume * 0.92)),
+    voiceURI: 'piper:en_US-lessac-high.onnx',
+  }
+}
+
+function weatherSummaryText() {
+  const severe = stage.routeWeatherSamples.find((sample) => sample.severity === 'severe')
+  const caution = stage.routeWeatherSamples.find((sample) => sample.severity === 'caution')
+  const sample = severe ?? caution ?? stage.activeWeather ?? stage.routeWeatherSamples[0]
+
+  if (stage.routeWeatherLoading && !sample) return 'Weather check is still loading.'
+  if (stage.routeWeatherError) return 'Weather check is currently unavailable.'
+  if (!sample) return 'No weather check is loaded.'
+  if (sample.severity === 'normal') return `Weather check. ${sample.summary}. No immediate weather hazard on the route.`
+  return `Weather check. ${sample.summary}. ${sample.risk} risk on the route.`
+}
+
+function roadSummaryText() {
+  const alert = stage.routeRoadAlerts[0]
+  if (stage.routeRoadAlertsLoading && !alert) return 'HAK road watch is still loading.'
+  if (stage.routeRoadAlertsError) return 'HAK road watch is currently unavailable.'
+  if (!alert) return 'HAK road watch is clear on the selected route.'
+  return `HAK road watch. ${alert.title}, ${formatAlertDistance(alert)}. ${alert.detail}`
+}
+
+function routeSummaryKey() {
+  if (!stage.route) return ''
+  return [
+    Math.round(stage.route.distance),
+    stage.routeWeatherUpdatedAt,
+    stage.routeRoadAlertsUpdatedAt,
+    stage.routeRoadAlerts.map((alert) => alert.id).join('|'),
+  ].join(':')
+}
+
+function speakPreRunSummary() {
+  if (!stage.route) return
+  const key = routeSummaryKey()
+  if (!key || routeSummarySpokenKey.value === key) return
+  routeSummarySpokenKey.value = key
+  speech.enqueue(`${weatherSummaryText()} ${roadSummaryText()}`, alertSpeechSettings())
+}
+
+function formatAlertDistance(alert: RouteRoadAlert) {
+  const delta = Math.max(0, Math.round(alert.distance - stage.activeDistanceMeters))
+  if (delta >= 1000) return `${(delta / 1000).toFixed(delta >= 9_950 ? 0 : 1)} kilometers ahead`
+  if (delta <= 30) return 'near current position'
+  return `${delta} meters ahead`
+}
+
+function roadAlertSpeechText(alert: RouteRoadAlert) {
+  const source = alert.source === 'hak' ? 'HAK alert' : 'Road condition alert'
+  return `${source}. ${alert.title}, ${formatAlertDistance(alert)}. ${alert.detail}`
+}
+
+function triggerRouteConditionAlerts(currentDistance: number, previousDistance: number) {
+  if (currentDistance < previousDistance) {
+    spokenRoadAlertIds.value = new Set()
+  }
+
+  if (!stage.activeDriveRunning || stage.routeRoadAlerts.length === 0) return
+
+  const leadMeters = Math.min(900, Math.max(320, (stage.activeSpeedKph / 3.6) * 14))
+  const startDistance = Math.max(0, previousDistance - 0.25)
+  const endDistance = Math.min(stage.totalDistance, currentDistance + 0.25)
+
+  for (const alert of stage.routeRoadAlerts) {
+    if (spokenRoadAlertIds.value.has(alert.id)) continue
+    const triggerDistance = Math.max(0, alert.distance - leadMeters)
+    if (triggerDistance < startDistance || triggerDistance > endDistance) continue
+
+    spokenRoadAlertIds.value = new Set([...spokenRoadAlertIds.value, alert.id])
+    speech.enqueue(roadAlertSpeechText(alert), alertSpeechSettings())
+    break
+  }
+}
+
 function prepareUpcomingSpeech(currentDistance: number) {
   const bucket = Math.floor(currentDistance / 35)
   if (bucket === lastPreparedSpeechBucket) return
@@ -360,6 +446,7 @@ function toggleSimulation(running: boolean) {
     if (!stage.route) return
     stopGpsWatch()
     phoneSensors.stop()
+    speakPreRunSummary()
     stage.setSimulationRunning(true)
     openDriveCockpit()
     speakCurrentWindow()
@@ -421,6 +508,7 @@ function startGpsDrive() {
   resetSpeechTracking()
   speech.cancel()
   speech.unlock()
+  speakPreRunSummary()
   stage.startGpsDrive()
   void phoneSensors.start()
   gpsWatchId = navigator.geolocation.watchPosition(
@@ -562,7 +650,10 @@ watch(
 
 watch(
   () => stage.activeDistanceMeters,
-  (current, previous = 0) => triggerDueNotes(current, previous),
+  (current, previous = 0) => {
+    triggerDueNotes(current, previous)
+    triggerRouteConditionAlerts(current, previous)
+  },
 )
 
 watch(
@@ -583,6 +674,7 @@ watch(
   () => stage.route,
   (route) => {
     resetSpeechTracking()
+    routeSummarySpokenKey.value = ''
     speech.cancel()
     stopGpsDrive()
     if (route && !desktopLayout.value && !driveMode.value) {
@@ -778,6 +870,7 @@ watch(desktopLayout, (enabled) => {
           :pace-notes="stage.paceNotes"
           :route="stage.route"
           :weather-samples="stage.routeWeatherSamples"
+          :road-alerts="stage.routeRoadAlerts"
           :selected-note-id="stage.selectedNoteId"
           :show-note-markers="true"
         />
@@ -814,12 +907,18 @@ watch(desktopLayout, (enabled) => {
           :speaking="speech.speaking.value"
           :completed-note-ids="completedSpeechNoteIdList"
           :current-weather="stage.activeWeather"
+          :active-road-alert="stage.activeRoadAlert"
           :spoken-note-ids="spokenNoteIdList"
           :speed-kph="stage.activeSpeedKph"
           :telemetry="stage.telemetry"
+          :upcoming-road-alert="stage.upcomingRoadAlert"
           :upcoming-weather-alert="stage.upcomingWeatherAlert"
+          :road-alerts-error="stage.routeRoadAlertsError"
+          :road-alerts-loading="stage.routeRoadAlertsLoading"
           :weather-error="stage.routeWeatherError"
           :weather-loading="stage.routeWeatherLoading"
+          @refresh-road-alerts="stage.refreshRouteRoadAlerts()"
+          @refresh-weather="stage.refreshRouteWeather()"
           @speak="speakNoteNow()"
           @toggle-drive="toggleDriveMode"
           @toggle-live-drive="toggleGpsDrive"
