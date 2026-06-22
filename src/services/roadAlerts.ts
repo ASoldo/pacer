@@ -28,11 +28,22 @@ export function roadAlertsFromWeather(samples: RouteWeatherSample[]): RouteRoadA
 }
 
 export async function fetchRouteRoadAlerts(route: RouteInfo, weatherSamples: RouteWeatherSample[]): Promise<RouteRoadAlert[]> {
-  const url = new URL('/api/road-alerts/route', window.location.origin)
-  url.searchParams.set('points', route.geometry.map((point) => `${point.lat.toFixed(5)},${point.lng.toFixed(5)}`).join(';'))
-
-  const response = await fetch(url)
   const weatherAlerts = roadAlertsFromWeather(weatherSamples)
+  const start = route.geometry[0]
+  const end = route.geometry.at(-1)
+
+  const response = await fetch('/api/road-alerts/route', {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      distance: route.distance,
+      duration: route.duration,
+      points: [start, end].filter(Boolean),
+    }),
+  })
 
   if (!response.ok) return weatherAlerts
 

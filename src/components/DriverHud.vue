@@ -8,6 +8,7 @@ import {
   Compass,
   Flag,
   Gauge,
+  Headset,
   LocateFixed,
   Maximize2,
   Megaphone,
@@ -17,6 +18,7 @@ import {
   Pause,
   RefreshCw,
   Timer,
+  TrafficCone,
   Volume2,
 } from '@lucide/vue'
 import { Badge } from '@/components/ui/badge'
@@ -88,6 +90,10 @@ const props = defineProps<{
   upcomingRoadAlert: RouteRoadAlert | null
   roadAlertsLoading: boolean
   roadAlertsError: string
+  lessacStatus: 'idle' | 'queued' | 'speaking'
+  lessacQueueCount: number
+  lessacTitle: string
+  lessacMessage: string
 }>()
 
 const emit = defineEmits<{
@@ -96,6 +102,7 @@ const emit = defineEmits<{
   'toggle-map-orientation': []
   'refresh-weather': []
   'refresh-road-alerts': []
+  'replay-lessac': []
   speak: []
 }>()
 
@@ -305,9 +312,9 @@ const weatherBadgeText = computed(() => {
 })
 const weatherBadgeTitle = computed(() => {
   const sample = weatherBadgeSample.value
-  if (props.weatherError) return props.weatherError
   if (props.weatherLoading && !sample) return 'Loading Open-Meteo route weather'
   if (!sample) return 'No route weather loaded'
+  if (props.weatherError) return `${sample.summary} (latest cached route weather)`
   const distance = sample.distance > props.activeDistanceMeters
     ? `${formatCompactMeters(sample.distance - props.activeDistanceMeters)} ahead`
     : 'near current position'
@@ -343,6 +350,17 @@ const roadAlertBadgeTitle = computed(() => {
     : 'near current position'
   return `${alert.title}: ${alert.detail} (${distance})`
 })
+const lessacTone = computed(() => {
+  if (props.lessacStatus === 'speaking') return 'info'
+  if (props.lessacStatus === 'queued') return 'warning'
+  return 'success'
+})
+const lessacLabel = computed(() => {
+  if (props.lessacStatus === 'speaking') return 'Lessac speaking'
+  if (props.lessacStatus === 'queued') return props.lessacQueueCount > 1 ? `${props.lessacQueueCount} queued` : 'Lessac queued'
+  return 'Lessac ready'
+})
+const lessacTitleText = computed(() => `${lessacLabel.value}: ${props.lessacTitle}`)
 const ghostDeltaVariant = computed(() => (props.ghostDeltaSeconds <= 0 ? 'success' : 'destructive'))
 const driveStatusLabel = computed(() => {
   if (props.running || props.attemptStatus === 'running') return 'Recording'
@@ -517,6 +535,17 @@ function timelineIconSize(note: PaceNote): 'sm' | 'md' {
             <MegaphoneOff v-else :size="14" />
             <span>{{ speechStatusLabel }}</span>
           </Badge>
+          <Badge
+            v-if="props.lessacStatus !== 'idle'"
+            as="span"
+            :variant="lessacTone"
+            class="h-6 gap-1.5 rounded-md px-2 text-[0.65rem] font-semibold"
+            :title="lessacTitleText"
+            data-testid="lessac-state-badge"
+          >
+            <Headset :size="14" />
+            <span>{{ props.lessacStatus === 'speaking' ? 'Lessac' : lessacQueueCount > 1 ? `${lessacQueueCount} queued` : 'Lessac queued' }}</span>
+          </Badge>
         </div>
       </div>
 
@@ -563,6 +592,51 @@ function timelineIconSize(note: PaceNote): 'sm' | 'md' {
                 variant="outline"
                 size="icon-lg"
                 class="wrc-route-alert-button"
+                :data-tone="lessacTone"
+                :aria-label="lessacTitleText"
+                :title="lessacTitleText"
+                type="button"
+                data-testid="drive-lessac-badge"
+              >
+                <Headset :size="18" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent side="top" align="end" class="w-72 p-2" data-testid="drive-lessac-menu">
+              <DropdownMenuLabel class="grid gap-2 px-2 py-2 text-foreground">
+                <span class="flex min-w-0 items-center gap-2">
+                  <Headset :size="18" class="text-primary" />
+                  <span class="grid min-w-0 gap-0.5">
+                    <strong class="truncate text-sm font-semibold">Lessac advisor</strong>
+                    <small class="truncate text-xs text-muted-foreground">Road sitrep and live hazards</small>
+                  </span>
+                  <Badge :variant="lessacTone" class="ml-auto">{{ lessacLabel }}</Badge>
+                </span>
+              </DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              <div class="grid gap-2 px-2 py-2 text-xs">
+                <div class="wrc-route-menu-row">
+                  <span class="text-muted-foreground">Status</span>
+                  <span class="wrc-route-menu-value">{{ lessacTitleText }}</span>
+                </div>
+                <div class="wrc-route-menu-row">
+                  <span class="text-muted-foreground">Last report</span>
+                  <span class="wrc-route-menu-value">{{ props.lessacMessage }}</span>
+                </div>
+              </div>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem @select.prevent="emit('replay-lessac')">
+                <RefreshCw :size="14" />
+                Replay sitrep
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+
+          <DropdownMenu :modal="false">
+            <DropdownMenuTrigger as-child>
+              <Button
+                variant="outline"
+                size="icon-lg"
+                class="wrc-route-alert-button"
                 :data-tone="weatherBadgeVariant"
                 :aria-label="`Weather, ${weatherBadgeText}`"
                 :title="weatherBadgeTitle"
@@ -585,17 +659,17 @@ function timelineIconSize(note: PaceNote): 'sm' | 'md' {
               </DropdownMenuLabel>
               <DropdownMenuSeparator />
               <div class="grid gap-2 px-2 py-2 text-xs">
-                <div class="flex items-center justify-between gap-3">
+                <div class="wrc-route-menu-row">
                   <span class="text-muted-foreground">Status</span>
-                  <span class="truncate font-medium">{{ weatherBadgeTitle }}</span>
+                  <span class="wrc-route-menu-value">{{ weatherBadgeTitle }}</span>
                 </div>
-                <div v-if="weatherBadgeSample" class="flex items-center justify-between gap-3">
+                <div v-if="weatherBadgeSample" class="wrc-route-menu-row">
                   <span class="text-muted-foreground">Wind gust</span>
-                  <span class="truncate font-medium">{{ Math.round(weatherBadgeSample.windGustKph) }} km/h</span>
+                  <span class="wrc-route-menu-value">{{ Math.round(weatherBadgeSample.windGustKph) }} km/h</span>
                 </div>
-                <div v-if="weatherBadgeSample" class="flex items-center justify-between gap-3">
+                <div v-if="weatherBadgeSample" class="wrc-route-menu-row">
                   <span class="text-muted-foreground">Precipitation</span>
-                  <span class="truncate font-medium">{{ weatherBadgeSample.precipitationMm.toFixed(1) }} mm</span>
+                  <span class="wrc-route-menu-value">{{ weatherBadgeSample.precipitationMm.toFixed(1) }} mm</span>
                 </div>
               </div>
               <DropdownMenuSeparator />
@@ -618,13 +692,13 @@ function timelineIconSize(note: PaceNote): 'sm' | 'md' {
                 type="button"
                 data-testid="drive-hak-badge"
               >
-                <CircleAlert :size="18" />
+                <TrafficCone :size="18" />
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent side="top" align="end" class="w-72 p-2" data-testid="drive-hak-menu">
               <DropdownMenuLabel class="grid gap-2 px-2 py-2 text-foreground">
                 <span class="flex min-w-0 items-center gap-2">
-                  <CircleAlert :size="18" class="text-primary" />
+                  <TrafficCone :size="18" class="text-primary" />
                   <span class="grid min-w-0 gap-0.5">
                     <strong class="truncate text-sm font-semibold">HAK road watch</strong>
                     <small class="truncate text-xs text-muted-foreground">Route obstacles and road alerts</small>
@@ -634,17 +708,17 @@ function timelineIconSize(note: PaceNote): 'sm' | 'md' {
               </DropdownMenuLabel>
               <DropdownMenuSeparator />
               <div class="grid gap-2 px-2 py-2 text-xs">
-                <div class="flex items-center justify-between gap-3">
+                <div class="wrc-route-menu-row">
                   <span class="text-muted-foreground">Status</span>
-                  <span class="truncate font-medium">{{ roadAlertBadgeTitle }}</span>
+                  <span class="wrc-route-menu-value">{{ roadAlertBadgeTitle }}</span>
                 </div>
-                <div v-if="roadAlertBadgeSample" class="flex items-center justify-between gap-3">
+                <div v-if="roadAlertBadgeSample" class="wrc-route-menu-row">
                   <span class="text-muted-foreground">Severity</span>
-                  <span class="truncate font-medium">{{ roadAlertBadgeSample.severity }}</span>
+                  <span class="wrc-route-menu-value">{{ roadAlertBadgeSample.severity }}</span>
                 </div>
-                <div v-if="roadAlertBadgeSample" class="flex items-center justify-between gap-3">
+                <div v-if="roadAlertBadgeSample" class="wrc-route-menu-row">
                   <span class="text-muted-foreground">Source</span>
-                  <span class="truncate font-medium">{{ roadAlertBadgeSample.source }}</span>
+                  <span class="wrc-route-menu-value">{{ roadAlertBadgeSample.source }}</span>
                 </div>
               </div>
               <DropdownMenuSeparator />

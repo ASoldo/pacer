@@ -4,12 +4,14 @@ import type { SpeechSettings, SpeechVoiceOption } from '../types'
 type SpeechJob = {
   text: string
   settings: SpeechSettings
+  channel?: 'driver' | 'advisor' | 'system'
   onStart?: () => void
   onEnd?: () => void
   onError?: (error: string) => void
 }
 
 type SpeechJobOptions = {
+  channel?: SpeechJob['channel']
   onStart?: () => void
   onEnd?: () => void
   onError?: (error: string) => void
@@ -418,7 +420,7 @@ export function useSpeech() {
     timer = window.setTimeout(() => {
       timer = null
       if (token !== playbackToken) return
-      const job = { text, settings, onStart: options.onStart, onEnd: options.onEnd, onError: options.onError }
+      const job = { text, settings, channel: options.channel, onStart: options.onStart, onEnd: options.onEnd, onError: options.onError }
       if (shouldUseServerSpeech()) {
         void playServerSpeech(job, token)
         return
@@ -431,8 +433,15 @@ export function useSpeech() {
     return true
   }
 
-  const enqueue = (text: string, settings: SpeechSettings) => {
-    queue.push({ text, settings: { ...settings } })
+  const enqueue = (text: string, settings: SpeechSettings, options: SpeechJobOptions = {}) => {
+    queue.push({
+      text,
+      settings: { ...settings },
+      channel: options.channel,
+      onStart: options.onStart,
+      onEnd: options.onEnd,
+      onError: options.onError,
+    })
     runQueue()
   }
 
@@ -452,6 +461,7 @@ export function useSpeech() {
       .map((segment) => ({
         text: segment.text,
         settings: { ...settings },
+        channel: 'driver' as const,
         onStart: segment.onStart,
         onEnd: segment.onEnd,
         onError: segment.onError,
@@ -460,7 +470,9 @@ export function useSpeech() {
     if (jobs.length === 0) return false
 
     unlocked.value = true
-    queue.push(...jobs)
+    const firstAdvisorIndex = queue.findIndex((job) => job.channel === 'advisor')
+    if (firstAdvisorIndex >= 0) queue.splice(firstAdvisorIndex, 0, ...jobs)
+    else queue.push(...jobs)
     queueLength.value = queue.length
     runQueue()
     return true

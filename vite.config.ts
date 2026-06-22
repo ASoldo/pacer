@@ -159,7 +159,12 @@ export default defineConfig({
     host: '0.0.0.0',
     port: 5173,
     proxy: {
-      '/api': 'http://127.0.0.1:5174',
+      '/api': {
+        target: 'http://127.0.0.1:5174',
+        changeOrigin: true,
+        timeout: 30_000,
+        proxyTimeout: 30_000,
+      },
     },
   },
   preview: {

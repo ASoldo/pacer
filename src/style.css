@@ -949,7 +949,7 @@ button:disabled {
   right: 0.75rem;
   bottom: 0;
   display: flex;
-  max-width: min(7rem, calc(100% - 4.4rem));
+  max-width: min(10.6rem, calc(100% - 4.4rem));
   min-width: 0;
   flex-wrap: nowrap;
   justify-content: flex-end;
@@ -997,6 +997,22 @@ button:disabled {
     0 0 0 2px rgba(127, 29, 29, 0.56),
     0 0 18px rgba(239, 68, 68, 0.32),
     inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+.wrc-route-menu-row {
+  display: grid;
+  grid-template-columns: 5.8rem minmax(0, 1fr);
+  align-items: start;
+  gap: 0.65rem;
+}
+
+.wrc-route-menu-value {
+  min-width: 0;
+  color: var(--foreground);
+  font-weight: 650;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  text-align: right;
 }
 
 .wrc-stage-progress {

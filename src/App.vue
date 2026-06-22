@@ -93,6 +93,10 @@ const speechRetryCounts = new Map<string, number>()
 const speechRetryTimers = new Map<string, number>()
 const spokenRoadAlertIds = ref<Set<string>>(new Set())
 const routeSummarySpokenKey = ref('')
+const lessacStatus = ref<'idle' | 'queued' | 'speaking'>('idle')
+const lessacQueueCount = ref(0)
+const lessacLastTitle = ref('Lessac advisor')
+const lessacLastMessage = ref('Road watch is standing by.')
 
 const currentNote = computed(() => stage.nextNote ?? null)
 const followingNote = computed(() => stage.followingNote ?? null)
@@ -140,6 +144,13 @@ function resetSpeechTracking() {
   speechRetryTimers.forEach((timer) => window.clearTimeout(timer))
   speechRetryTimers.clear()
   spokenRoadAlertIds.value = new Set()
+  lessacStatus.value = 'idle'
+  lessacQueueCount.value = 0
+}
+
+function clearLessacQueueState() {
+  lessacStatus.value = 'idle'
+  lessacQueueCount.value = 0
 }
 
 function isSpeechQueued(note: PaceNote) {
@@ -252,6 +263,7 @@ function handleSpeechError(note: PaceNote) {
 
 function speakNoteNow(note = currentNote.value) {
   if (!note) return
+  clearLessacQueueState()
   const spoken = speech.speakNow(note.text, stage.speech, {
     onStart: () => handleSpeechStart(note),
     onEnd: () => completeSpoken(note.id),
@@ -319,6 +331,30 @@ function alertSpeechSettings() {
   }
 }
 
+function queueLessacReport(title: string, text: string) {
+  const cleanText = text.trim()
+  if (!cleanText) return
+
+  lessacLastTitle.value = title
+  lessacLastMessage.value = cleanText
+  lessacQueueCount.value += 1
+  lessacStatus.value = lessacStatus.value === 'speaking' ? 'speaking' : 'queued'
+  speech.enqueue(cleanText, alertSpeechSettings(), {
+    channel: 'advisor',
+    onStart: () => {
+      lessacStatus.value = 'speaking'
+      lessacQueueCount.value = Math.max(0, lessacQueueCount.value - 1)
+    },
+    onEnd: () => {
+      lessacStatus.value = lessacQueueCount.value > 0 ? 'queued' : 'idle'
+    },
+    onError: () => {
+      lessacQueueCount.value = Math.max(0, lessacQueueCount.value - 1)
+      lessacStatus.value = lessacQueueCount.value > 0 ? 'queued' : 'idle'
+    },
+  })
+}
+
 function weatherSummaryText() {
   const severe = stage.routeWeatherSamples.find((sample) => sample.severity === 'severe')
   const caution = stage.routeWeatherSamples.find((sample) => sample.severity === 'caution')
@@ -354,7 +390,12 @@ function speakPreRunSummary() {
   const key = routeSummaryKey()
   if (!key || routeSummarySpokenKey.value === key) return
   routeSummarySpokenKey.value = key
-  speech.enqueue(`${weatherSummaryText()} ${roadSummaryText()}`, alertSpeechSettings())
+  queueLessacReport('Pre-start sitrep', `${weatherSummaryText()} ${roadSummaryText()}`)
+}
+
+function replayLessacSitrep() {
+  if (!stage.route) return
+  queueLessacReport('Route sitrep', `${weatherSummaryText()} ${roadSummaryText()}`)
 }
 
 function formatAlertDistance(alert: RouteRoadAlert) {
@@ -386,9 +427,31 @@ function triggerRouteConditionAlerts(currentDistance: number, previousDistance: 
     if (triggerDistance < startDistance || triggerDistance > endDistance) continue
 
     spokenRoadAlertIds.value = new Set([...spokenRoadAlertIds.value, alert.id])
-    speech.enqueue(roadAlertSpeechText(alert), alertSpeechSettings())
+    queueLessacReport('Live road alert', roadAlertSpeechText(alert))
     break
   }
+}
+
+function formatDuration(value: number) {
+  const safe = Math.max(0, Math.round(value))
+  const minutes = Math.floor(safe / 60)
+  const seconds = safe % 60
+  return `${minutes} minutes ${seconds.toString().padStart(2, '0')} seconds`
+}
+
+function finishSitrepText() {
+  const distanceKm = stage.driveAttempt.unwrappedDistanceMeters > 0
+    ? stage.driveAttempt.unwrappedDistanceMeters / 1000
+    : stage.totalDistance / 1000
+  const alerts = stage.routeRoadAlerts.filter((alert) => alert.distance <= Math.max(stage.activeDistanceMeters, stage.totalDistance))
+  const alertText = alerts.length
+    ? `${alerts.length} road condition ${alerts.length === 1 ? 'item was' : 'items were'} tracked. Latest: ${alerts[alerts.length - 1].title}.`
+    : 'No live road hazards were tracked during the run.'
+  const lapText = stage.driveAttempt.targetLapCount > 1 || stage.driveAttempt.completedLapCount > 1
+    ? `Completed ${stage.driveAttempt.completedLapCount} of ${stage.driveAttempt.targetLapCount} laps. `
+    : ''
+
+  return `Finish sitrep. ${lapText}Run time ${formatDuration(stage.driveAttempt.elapsedSeconds)} over ${distanceKm.toFixed(1)} kilometers. ${weatherSummaryText()} ${alertText}`
 }
 
 function prepareUpcomingSpeech(currentDistance: number) {
@@ -575,6 +638,7 @@ function setDriveMode(enabled: boolean) {
   driveMode.value = enabled
   if (enabled) {
     void screenWakeLock.request()
+    speakPreRunSummary()
     return
   }
 
@@ -667,6 +731,9 @@ watch(
   () => stage.driveAttempt.status,
   (status, previous) => {
     if (status === 'running' && previous !== 'running') speakCurrentWindow()
+    if (status === 'finished' && previous !== 'finished') {
+      queueLessacReport('Finish sitrep', finishSitrepText())
+    }
   },
 )
 
@@ -915,8 +982,13 @@ watch(desktopLayout, (enabled) => {
           :upcoming-weather-alert="stage.upcomingWeatherAlert"
           :road-alerts-error="stage.routeRoadAlertsError"
           :road-alerts-loading="stage.routeRoadAlertsLoading"
+          :lessac-message="lessacLastMessage"
+          :lessac-queue-count="lessacQueueCount"
+          :lessac-status="lessacStatus"
+          :lessac-title="lessacLastTitle"
           :weather-error="stage.routeWeatherError"
           :weather-loading="stage.routeWeatherLoading"
+          @replay-lessac="replayLessacSitrep"
           @refresh-road-alerts="stage.refreshRouteRoadAlerts()"
           @refresh-weather="stage.refreshRouteWeather()"
           @speak="speakNoteNow()"

@@ -574,14 +574,17 @@ app.get('/api/weather/route', async (request, response) => {
   }
 })
 
-app.get('/api/road-alerts/route', (_request, response) => {
+function sendRoadAlertsRoute(_request, response) {
   response.setHeader('Cache-Control', 'max-age=120')
   response.json({
     source: 'hak',
     status: 'unconfigured',
     alerts: [],
   })
-})
+}
+
+app.get('/api/road-alerts/route', sendRoadAlertsRoute)
+app.post('/api/road-alerts/route', sendRoadAlertsRoute)
 
 app.get('/version.json', (_request, response, next) => {
   response.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')

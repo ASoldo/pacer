@@ -148,6 +148,7 @@ function addSearchResult(resultId: string) {
           <ToggleGroupItem
             value="point-to-point"
             class="w-full justify-center"
+            :class="stage.routeMode === 'point-to-point' ? 'bg-card text-primary shadow-sm ring-1 ring-border' : 'text-muted-foreground'"
             title="Point-to-point stage route"
             data-testid="route-mode-stage"
           >
@@ -157,6 +158,7 @@ function addSearchResult(resultId: string) {
           <ToggleGroupItem
             value="closed-circuit"
             class="w-full justify-center"
+            :class="stage.routeMode === 'closed-circuit' ? 'bg-card text-primary shadow-sm ring-1 ring-border' : 'text-muted-foreground'"
             title="Closed-circuit route"
             data-testid="route-mode-circuit"
           >

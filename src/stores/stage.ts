@@ -817,11 +817,10 @@ export const useStageStore = defineStore('stage', () => {
       routeWeatherSamples.value = samples
       routeWeatherUpdatedAt.value = Date.now()
       void refreshRouteRoadAlerts(targetRoute, samples)
-    } catch (error) {
+    } catch {
       if (requestId !== routeWeatherRequestId) return
-      routeWeatherSamples.value = []
-      routeWeatherUpdatedAt.value = 0
-      routeWeatherError.value = error instanceof Error ? error.message : 'Weather fetch failed.'
+      routeWeatherError.value = ''
+      void refreshRouteRoadAlerts(targetRoute, routeWeatherSamples.value)
     } finally {
       if (requestId === routeWeatherRequestId) routeWeatherLoading.value = false
     }
