@@ -16,6 +16,8 @@ export type LocationSearchResult = LatLng & {
   label: string
   name: string
   category: string
+  precision: 'address' | 'street' | 'place'
+  query: string
   source: 'nominatim'
 }
 

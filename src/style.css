@@ -1015,6 +1015,16 @@ button:disabled {
   text-align: right;
 }
 
+.stage-waypoint-marker--pending {
+  filter: drop-shadow(0 0 14px rgba(245, 158, 11, 0.58));
+}
+
+.stage-waypoint-marker--pending .stage-waypoint-label {
+  border-color: rgba(245, 158, 11, 0.55);
+  background: rgba(15, 23, 42, 0.94);
+  color: #facc15;
+}
+
 .wrc-stage-progress {
   position: relative;
   display: grid;

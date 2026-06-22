@@ -16,6 +16,8 @@ const props = defineProps<{
   routeMode: RouteMode
   driveMode: boolean
   driveRunning: boolean
+  manualPlacementPoint: LatLng | null
+  manualPlacementLabel: string
   showNoteMarkers: boolean
   activeDistance: number
   selectedNoteId: string
@@ -24,6 +26,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   'map-click': [point: LatLng]
   'select-note': [id: string]
+  'waypoint-move': [id: string, point: LatLng]
 }>()
 
 type VisualCar = {
@@ -69,6 +72,7 @@ const mapEl = ref<HTMLDivElement | null>(null)
 let map: L.Map | null = null
 let tileLayer: L.TileLayer | null = null
 let waypointLayer: L.LayerGroup | null = null
+let manualPlacementLayer: L.LayerGroup | null = null
 let routeLayer: L.LayerGroup | null = null
 let routeDecorationLayer: L.LayerGroup | null = null
 let noteLayer: L.LayerGroup | null = null
@@ -1066,6 +1070,7 @@ function renderWaypoints() {
       : '<span class="stage-waypoint-marker__split" aria-hidden="true"></span>'
 
     const marker = L.marker([point.lat, point.lng], {
+      draggable: !props.driveMode,
       icon: L.divIcon({
         className: 'stage-waypoint-marker',
         iconSize: [112, 70],
@@ -1078,11 +1083,52 @@ function renderWaypoints() {
         `,
       }),
     })
+    marker.on('dragend', () => {
+      const next = marker.getLatLng()
+      emit('waypoint-move', point.id, { lat: next.lat, lng: next.lng })
+    })
 
     waypointLayer?.addLayer(marker)
   })
 
   waypointLayer.addTo(map)
+}
+
+function renderManualPlacement() {
+  if (!map) return
+  clearLayer(manualPlacementLayer)
+  manualPlacementLayer = null
+
+  if (!props.manualPlacementPoint) return
+
+  const label = stageWaypointLabel(props.manualPlacementLabel || 'Pending point')
+  manualPlacementLayer = L.layerGroup()
+  L.marker([props.manualPlacementPoint.lat, props.manualPlacementPoint.lng], {
+    interactive: false,
+    icon: L.divIcon({
+      className: 'stage-waypoint-marker stage-waypoint-marker--pending',
+      iconSize: [132, 76],
+      iconAnchor: [66, 62],
+      html: `
+        <div class="stage-waypoint-marker__stack" title="${label}">
+          <span class="stage-waypoint-label">Pick exact point</span>
+          <div class="stage-waypoint-marker__body is-start" aria-hidden="true">
+            <span class="stage-waypoint-marker__pole"></span>
+            <span class="stage-waypoint-marker__flag"></span>
+          </div>
+        </div>
+      `,
+    }),
+  }).addTo(manualPlacementLayer)
+
+  manualPlacementLayer.addTo(map)
+}
+
+function focusManualPlacement() {
+  if (!map || !props.manualPlacementPoint) return
+  const targetZoom = Math.max(map.getZoom(), Math.min(18, tileMaxZoom))
+  map.setView([props.manualPlacementPoint.lat, props.manualPlacementPoint.lng], targetZoom, { animate: true })
+  map.getContainer().dataset.zoom = map.getZoom().toFixed(2)
 }
 
 function renderRoute() {
@@ -1337,6 +1383,7 @@ function renderCar() {
 function renderAll() {
   renderRoute()
   renderWaypoints()
+  renderManualPlacement()
   renderNotes()
   updateGhostLayer()
   renderCar()
@@ -1381,6 +1428,7 @@ onMounted(() => {
   document.addEventListener('visibilitychange', handleMapResize)
 
   renderAll()
+  focusManualPlacement()
   if (props.driveMode) {
     scheduleDriveStartZoom()
   }
@@ -1408,6 +1456,10 @@ onBeforeUnmount(() => {
 })
 
 watch(() => props.waypoints, renderWaypoints, { deep: true })
+watch(() => props.manualPlacementPoint, () => {
+  renderManualPlacement()
+  focusManualPlacement()
+}, { deep: true })
 watch(() => props.route, () => {
   routeData = null
   lastRouteRenderKey = ''

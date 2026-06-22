@@ -9,6 +9,7 @@ import {
   History,
   Home,
   ListChecks,
+  MapPinPlus,
   Menu,
   Navigation,
   RefreshCw,
@@ -127,7 +128,13 @@ function setTheme(nextTheme: string) {
 }
 
 function addPoint(point: LatLng) {
+  if (stage.placePendingManualWaypoint(point)) return
   stage.addWaypoint(point)
+}
+
+function handleManualWaypointPlacement() {
+  selectEditorPanel('stage')
+  if (!desktopLayout.value) ui.setStageSubPanel('map')
 }
 
 function noteTriggerDistance(note: PaceNote) {
@@ -1067,7 +1074,10 @@ watch(desktopLayout, (enabled) => {
               </TabsTrigger>
             </TabsList>
           </Tabs>
-          <StageControls v-if="stageSubPanel === 'route' || stageSubPanel === 'map'" />
+          <StageControls
+            v-if="stageSubPanel === 'route' || stageSubPanel === 'map'"
+            @manual-place="handleManualWaypointPlacement"
+          />
           <PaceNotesPanel
             v-else-if="stageSubPanel === 'notes'"
             :last-error="speech.lastError.value"
@@ -1096,12 +1106,37 @@ watch(desktopLayout, (enabled) => {
           :pace-notes="stage.paceNotes"
           :route="stage.route"
           :route-mode="stage.routeMode"
+          :manual-placement-label="stage.pendingManualWaypointName"
+          :manual-placement-point="stage.pendingManualWaypointPoint"
           :selected-note-id="stage.selectedNoteId"
           :show-note-markers="true"
           :waypoints="stage.waypoints"
           @map-click="addPoint"
           @select-note="stage.setSelectedNote"
+          @waypoint-move="stage.updateWaypointPosition"
         />
+
+        <div
+          v-if="stage.pendingManualWaypointName"
+          class="pointer-events-auto absolute left-3 right-3 top-3 z-[760] grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-md border border-amber-500/35 bg-card/95 p-2 text-xs shadow-xl backdrop-blur"
+          data-testid="manual-waypoint-placement"
+        >
+          <MapPinPlus :size="16" class="text-amber-300" />
+          <p class="min-w-0 text-foreground">
+            Pick exact point for
+            <b class="text-amber-300">{{ stage.pendingManualWaypointName }}</b>
+          </p>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label="Cancel manual point placement"
+            title="Cancel manual point placement"
+            type="button"
+            @click="stage.cancelPendingManualWaypoint()"
+          >
+            <X :size="13" />
+          </Button>
+        </div>
 
         <VehicleSignal compact class="vehicle-signal--map" />
         <Button
@@ -1165,7 +1200,7 @@ watch(desktopLayout, (enabled) => {
           </div>
 
           <div v-if="stageSubPanel === 'route'" class="min-h-0 overflow-y-auto" data-testid="setup-panel">
-            <StageControls />
+            <StageControls @manual-place="handleManualWaypointPlacement" />
           </div>
 
           <section
@@ -1184,12 +1219,36 @@ watch(desktopLayout, (enabled) => {
               :pace-notes="stage.paceNotes"
               :route="stage.route"
               :route-mode="stage.routeMode"
+              :manual-placement-label="stage.pendingManualWaypointName"
+              :manual-placement-point="stage.pendingManualWaypointPoint"
               :selected-note-id="stage.selectedNoteId"
               :show-note-markers="true"
               :waypoints="stage.waypoints"
               @map-click="addPoint"
               @select-note="stage.setSelectedNote"
+              @waypoint-move="stage.updateWaypointPosition"
             />
+            <div
+              v-if="stage.pendingManualWaypointName"
+              class="pointer-events-auto absolute left-3 right-3 top-3 z-[760] grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-md border border-amber-500/35 bg-card/95 p-2 text-xs shadow-xl backdrop-blur"
+              data-testid="manual-waypoint-placement"
+            >
+              <MapPinPlus :size="16" class="text-amber-300" />
+              <p class="min-w-0 text-foreground">
+                Tap exact point for
+                <b class="text-amber-300">{{ stage.pendingManualWaypointName }}</b>
+              </p>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Cancel manual point placement"
+                title="Cancel manual point placement"
+                type="button"
+                @click="stage.cancelPendingManualWaypoint()"
+              >
+                <X :size="13" />
+              </Button>
+            </div>
             <VehicleSignal compact class="vehicle-signal--map" />
             <Button
               class="drive-map-cta h-10 gap-2 px-4 text-sm font-semibold shadow-xl"

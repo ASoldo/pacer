@@ -39,6 +39,114 @@ function clean(value) {
   return String(value ?? '').trim()
 }
 
+function parseAddressQuery(value) {
+  const parts = clean(value)
+    .split(',')
+    .map((part) => clean(part))
+    .filter(Boolean)
+  const first = parts[0] ?? ''
+  const suffixParts = parts.slice(1)
+  const leadingNumber = first.match(/^(\d+[a-zA-Z]?)\s+(.+)$/)
+  const trailingNumber = first.match(/^(.+?)\s+(\d+[a-zA-Z]?)$/)
+  const match = leadingNumber
+    ? { houseNumber: leadingNumber[1], street: leadingNumber[2] }
+    : trailingNumber
+      ? { houseNumber: trailingNumber[2], street: trailingNumber[1] }
+      : null
+
+  if (!match?.houseNumber || !match.street) return null
+
+  return {
+    houseNumber: match.houseNumber,
+    street: clean(match.street),
+    city: suffixParts[0] ?? '',
+    country: suffixParts.slice(1).join(', '),
+  }
+}
+
+function nominatimUrl(params) {
+  const url = new URL('https://nominatim.openstreetmap.org/search')
+  url.searchParams.set('format', 'jsonv2')
+  url.searchParams.set('addressdetails', '1')
+  url.searchParams.set('limit', String(params.limit ?? 6))
+  url.searchParams.set('accept-language', 'en')
+
+  for (const [key, value] of Object.entries(params)) {
+    if (key === 'limit') continue
+    const cleanValue = clean(value)
+    if (cleanValue) url.searchParams.set(key, cleanValue)
+  }
+
+  return url
+}
+
+async function fetchNominatim(url) {
+  const upstream = await fetch(url, {
+    headers: {
+      accept: 'application/json',
+      'user-agent': 'RallyPacer/0.3.2 local-development',
+    },
+  })
+
+  if (!upstream.ok) {
+    throw new Error(`Nominatim returned ${upstream.status}`)
+  }
+
+  const payload = await upstream.json()
+  return Array.isArray(payload) ? payload : []
+}
+
+function geocodePrecision(item) {
+  const addresstype = clean(item.addresstype).toLowerCase()
+  const category = clean(item.category ?? item.class).toLowerCase()
+  const type = clean(item.type).toLowerCase()
+
+  if (item.address?.house_number || item.address?.housenumber || addresstype === 'house' || type === 'house') return 'address'
+  if (item.address?.road || addresstype === 'road' || category === 'highway') return 'street'
+  return 'place'
+}
+
+function geocodeRank(item) {
+  const precision = geocodePrecision(item)
+  const category = clean(item.category ?? item.class).toLowerCase()
+  const type = clean(item.type).toLowerCase()
+  const source = clean(item.search_source)
+  let score = Number(item.importance ?? 0)
+
+  if (precision === 'address') score += 100
+  if (precision === 'street') score += 45
+  if (precision === 'place') score += 5
+  if (source === 'structured') score += 35
+  if (type === 'administrative' || category === 'boundary') score -= 60
+
+  return score
+}
+
+function mergeGeocodeResults(query, groups, limit) {
+  const seen = new Set()
+
+  return groups
+    .flatMap(({ source, results }) =>
+      results.map((result, index) => ({
+        ...result,
+        query,
+        search_source: source,
+        precision: geocodePrecision(result),
+        _rank: geocodeRank({ ...result, search_source: source }),
+        _order: index,
+      })),
+    )
+    .filter((result) => {
+      const key = [result.osm_type, result.osm_id, result.place_id, result.display_name, result.lat, result.lon].map(clean).join(':')
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+    .sort((first, second) => second._rank - first._rank || first._order - second._order)
+    .slice(0, limit)
+    .map(({ _rank, _order, ...result }) => result)
+}
+
 app.post('/api/client-log', (request, response) => {
   const scope = clean(request.body?.scope).slice(0, 40) || 'client'
   const entries = Array.isArray(request.body?.entries) ? request.body.entries.slice(0, 20) : []
@@ -463,28 +571,23 @@ app.get('/api/geocode/search', async (request, response) => {
     return
   }
 
-  const url = new URL('https://nominatim.openstreetmap.org/search')
-  url.searchParams.set('q', query)
-  url.searchParams.set('format', 'jsonv2')
-  url.searchParams.set('addressdetails', '1')
-  url.searchParams.set('limit', String(limit))
-  url.searchParams.set('accept-language', 'en')
-
   try {
-    const upstream = await fetch(url, {
-      headers: {
-        accept: 'application/json',
-        'user-agent': 'RallyPacer/0.3.2 local-development',
-      },
-    })
-
-    if (!upstream.ok) {
-      response.status(502).json({ error: `Nominatim returned ${upstream.status}` })
-      return
-    }
+    const address = parseAddressQuery(query)
+    const unstructured = await fetchNominatim(nominatimUrl({ q: query, limit }))
+    const structured = address
+      ? await fetchNominatim(nominatimUrl({
+          street: `${address.street} ${address.houseNumber}`,
+          city: address.city,
+          country: address.country,
+          limit,
+        }))
+      : []
 
     response.setHeader('Cache-Control', 'max-age=3600')
-    response.json({ results: await upstream.json() })
+    response.json({ results: mergeGeocodeResults(query, [
+      { source: 'structured', results: structured },
+      { source: 'nominatim', results: unstructured },
+    ], limit) })
   } catch (error) {
     response.status(502).json({ error: error instanceof Error ? error.message : 'Location search unavailable' })
   }

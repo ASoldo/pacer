@@ -384,6 +384,8 @@ export const useStageStore = defineStore('stage', () => {
   const locationSearchResults = ref<LocationSearchResult[]>([])
   const locationSearchLoading = ref(false)
   const locationSearchError = ref('')
+  const pendingManualWaypointName = ref('')
+  const pendingManualWaypointPoint = ref<LatLng | null>(null)
   let routeWeatherRequestId = 0
   let routeRoadAlertsRequestId = 0
   let locationSearchRequestId = 0
@@ -736,7 +738,47 @@ export const useStageStore = defineStore('stage', () => {
   }
 
   function addSearchResultWaypoint(result: LocationSearchResult) {
+    const requestedName = result.query || result.name
+    if (result.precision !== 'address' && /\d/.test(requestedName)) {
+      pendingManualWaypointName.value = requestedName
+      pendingManualWaypointPoint.value = { lat: result.lat, lng: result.lng }
+      return 'manual' as const
+    }
+
     addWaypoint({ lat: result.lat, lng: result.lng }, result.name)
+    return 'added' as const
+  }
+
+  function placePendingManualWaypoint(point: LatLng) {
+    const name = pendingManualWaypointName.value.trim()
+    if (!name) return false
+
+    pendingManualWaypointName.value = ''
+    pendingManualWaypointPoint.value = null
+    addWaypoint(point, name)
+    return true
+  }
+
+  function cancelPendingManualWaypoint() {
+    pendingManualWaypointName.value = ''
+    pendingManualWaypointPoint.value = null
+  }
+
+  function updateWaypointPosition(pointId: string, point: LatLng) {
+    let changed = false
+    waypoints.value = waypoints.value.map((entry) => {
+      if (entry.id !== pointId) return entry
+      changed = true
+      return { ...entry, lat: point.lat, lng: point.lng }
+    })
+    if (changed) clearRoute()
+  }
+
+  function renameWaypoint(pointId: string, name: string) {
+    const nextName = name.trim()
+    waypoints.value = waypoints.value.map((entry) =>
+      entry.id === pointId ? { ...entry, name: nextName || entry.name } : entry,
+    )
   }
 
   function removeWaypoint(pointId: string) {
@@ -1437,6 +1479,8 @@ export const useStageStore = defineStore('stage', () => {
     locationSearchResults,
     locationSearchLoading,
     locationSearchError,
+    pendingManualWaypointName,
+    pendingManualWaypointPoint,
     hasRoute,
     totalDistance,
     activeDistanceMeters,
@@ -1463,6 +1507,10 @@ export const useStageStore = defineStore('stage', () => {
     currentDriveRun,
     addWaypoint,
     addSearchResultWaypoint,
+    placePendingManualWaypoint,
+    cancelPendingManualWaypoint,
+    updateWaypointPosition,
+    renameWaypoint,
     removeWaypoint,
     reverseWaypoints,
     clearStage,

@@ -6,8 +6,33 @@ type NominatimSearchItem = {
   name?: string
   lat?: string
   lon?: string
+  category?: string
   class?: string
   type?: string
+  addresstype?: string
+  precision?: LocationSearchResult['precision']
+  query?: string
+  address?: {
+    house_number?: string
+    housenumber?: string
+    road?: string
+  }
+}
+
+function queryHouseNumber(value: string) {
+  const firstPart = value.split(',')[0]?.trim() ?? ''
+  return firstPart.match(/(?:^|\s)(\d+[a-zA-Z]?)\s*$/)?.[1] ?? firstPart.match(/^(\d+[a-zA-Z]?)\s/)?.[1] ?? ''
+}
+
+function itemPrecision(item: NominatimSearchItem): LocationSearchResult['precision'] {
+  if (item.precision) return item.precision
+  const addresstype = String(item.addresstype ?? '').toLowerCase()
+  const category = String(item.category ?? item.class ?? '').toLowerCase()
+  const type = String(item.type ?? '').toLowerCase()
+
+  if (item.address?.house_number || item.address?.housenumber || addresstype === 'house' || type === 'house') return 'address'
+  if (item.address?.road || addresstype === 'road' || category === 'highway') return 'street'
+  return 'place'
 }
 
 export async function searchLocations(query: string): Promise<LocationSearchResult[]> {
@@ -27,7 +52,14 @@ export async function searchLocations(query: string): Promise<LocationSearchResu
   return results.flatMap((item, index) => {
     const lat = Number(item.lat)
     const lng = Number(item.lon)
-    const label = String(item.display_name ?? '').trim()
+    const providerLabel = String(item.display_name ?? '').trim()
+    const precision = itemPrecision(item)
+    const requestedQuery = String(item.query ?? trimmed).trim()
+    const houseNumber = queryHouseNumber(requestedQuery)
+    const approximateHouseMatch = Boolean(houseNumber) && precision !== 'address' && !providerLabel.includes(houseNumber)
+    const label = approximateHouseMatch
+      ? `${providerLabel} - pick exact point on map`
+      : providerLabel
 
     if (!Number.isFinite(lat) || !Number.isFinite(lng) || !label) return []
 
@@ -36,8 +68,16 @@ export async function searchLocations(query: string): Promise<LocationSearchResu
       lat,
       lng,
       label,
-      name: String(item.name ?? '').trim() || label.split(',')[0]?.trim() || 'Location',
-      category: [item.class, item.type].filter(Boolean).join(' / ') || 'place',
+      name: approximateHouseMatch
+        ? requestedQuery
+        : String(item.name ?? '').trim() || providerLabel.split(',')[0]?.trim() || 'Location',
+      category: [
+        precision === 'address' ? 'address' : precision === 'street' ? 'street match' : 'place',
+        item.category ?? item.class,
+        item.type,
+      ].filter(Boolean).join(' / '),
+      precision,
+      query: requestedQuery,
       source: 'nominatim' as const,
     }]
   })

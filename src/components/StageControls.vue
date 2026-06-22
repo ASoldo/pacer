@@ -35,6 +35,9 @@ import { Label } from '@/components/ui/label'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 
 const stage = useStageStore()
+const emit = defineEmits<{
+  'manual-place': []
+}>()
 const circuitLapInput = ref(String(stage.circuitLapCount))
 const circuitLapFocused = ref(false)
 const locationQuery = ref('')
@@ -106,8 +109,9 @@ function addSearchResult(resultId: string) {
   const result = stage.locationSearchResults.find((item) => item.id === resultId)
   if (!result) return
 
-  stage.addSearchResultWaypoint(result)
+  const outcome = stage.addSearchResultWaypoint(result)
   locationQuery.value = ''
+  if (outcome === 'manual') emit('manual-place')
 }
 </script>
 
@@ -139,6 +143,24 @@ function addSearchResult(resultId: string) {
         </Button>
       </CardHeader>
       <CardContent class="grid gap-3">
+        <Alert v-if="stage.pendingManualWaypointName" class="border-amber-500/35 bg-amber-500/10">
+          <AlertDescription class="flex items-center justify-between gap-2 text-xs text-amber-100">
+            <span class="min-w-0">
+              Pick the exact map point for
+              <b class="text-amber-300">{{ stage.pendingManualWaypointName }}</b>.
+            </span>
+            <Button
+              variant="ghost"
+              size="sm"
+              class="h-7 shrink-0 px-2 text-amber-200 hover:text-amber-100"
+              type="button"
+              @click="stage.cancelPendingManualWaypoint()"
+            >
+              Cancel
+            </Button>
+          </AlertDescription>
+        </Alert>
+
         <ToggleGroup
           type="single"
           :model-value="stage.routeMode"
@@ -202,7 +224,15 @@ function addSearchResult(resultId: string) {
             >
               <MapPinPlus :size="15" class="text-primary" />
               <span class="min-w-0">
-                <b class="block truncate text-foreground">{{ result.name }}</b>
+                <b class="flex min-w-0 items-center gap-1.5 text-foreground">
+                  <span class="truncate">{{ result.name }}</span>
+                  <small
+                    v-if="result.precision !== 'address' && /\\d/.test(result.query)"
+                    class="shrink-0 rounded border border-amber-500/40 bg-amber-500/10 px-1 py-0.5 text-[9px] font-black uppercase tracking-[0.08em] text-amber-400"
+                  >
+                    approx.
+                  </small>
+                </b>
                 <span class="block truncate text-muted-foreground">{{ result.label }}</span>
               </span>
             </button>
@@ -327,7 +357,12 @@ function addSearchResult(resultId: string) {
       >
         <MapPinPlus :size="16" class="text-primary" />
         <div class="min-w-0">
-          <p class="truncate text-xs font-bold">{{ point.name }}</p>
+          <Input
+            :model-value="point.name"
+            class="h-7 border-transparent bg-transparent px-0 text-xs font-bold shadow-none focus-visible:border-border focus-visible:px-2"
+            title="Point name"
+            @update:model-value="(value) => stage.renameWaypoint(point.id, String(value))"
+          />
           <p class="truncate font-mono text-xs text-muted-foreground">
             {{ point.lat.toFixed(5) }}, {{ point.lng.toFixed(5) }}
           </p>
