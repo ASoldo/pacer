@@ -22,7 +22,7 @@ import {
   X,
 } from '@lucide/vue'
 import { useStageStore } from '../stores/stage'
-import { searchLocations } from '../services/geocoding'
+import { reverseLocation, searchLocations } from '../services/geocoding'
 import type { LatLng, LocationSearchResult, StagePoint } from '../types'
 import { formatMeters } from '../utils/geo'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -50,10 +50,12 @@ const stage = useStageStore()
 const circuitLapInput = ref(String(stage.circuitLapCount))
 const circuitLapFocused = ref(false)
 const locationQuery = ref('')
+const pinpointTitle = ref('')
 const pinpointQuery = ref('')
 const pinpointSearchResults = ref<LocationSearchResult[]>([])
 const pinpointSearchLoading = ref(false)
 const pinpointSearchError = ref('')
+const pinpointSearchOpen = ref(false)
 const selectedSavedRouteId = ref('')
 const pointListEl = ref<HTMLElement | null>(null)
 const pinpointMapEl = ref<HTMLElement | null>(null)
@@ -61,6 +63,8 @@ const draggedPointId = ref('')
 let searchTimer: number | null = null
 let pinpointSearchTimer: number | null = null
 let pinpointSearchRequestId = 0
+let pinpointReverseRequestId = 0
+let suppressNextPinpointSearch = false
 let pinpointMap: L.Map | null = null
 let pinpointTileLayer: L.TileLayer | null = null
 let pinpointMarker: L.Marker | null = null
@@ -90,6 +94,13 @@ watch(locationQuery, (query) => {
 })
 
 watch(pinpointQuery, (query) => {
+  if (suppressNextPinpointSearch) {
+    suppressNextPinpointSearch = false
+    if (pinpointSearchTimer !== null) window.clearTimeout(pinpointSearchTimer)
+    pinpointSearchTimer = null
+    return
+  }
+
   if (pinpointSearchTimer !== null) window.clearTimeout(pinpointSearchTimer)
   pinpointSearchTimer = window.setTimeout(() => {
     pinpointSearchTimer = null
@@ -151,24 +162,41 @@ function addSearchResult(resultId: string) {
   const outcome = stage.addSearchResultWaypoint(result)
   locationQuery.value = ''
   if (outcome === 'manual') {
-    pinpointQuery.value = stage.pendingManualWaypointName
-    clearPinpointSearchResults()
+    pinpointTitle.value = ''
+    setPinpointQuery(stage.pendingManualWaypointName, false)
     schedulePinpointMapSync()
   }
 }
 
 function editWaypoint(point: StagePoint) {
+  const seed = routeLabelLocationSeed(point.name)
   stage.beginPendingManualWaypoint(point.name, { lat: point.lat, lng: point.lng }, point.id)
-  pinpointQuery.value = point.name
-  clearPinpointSearchResults()
+  pinpointTitle.value = point.name
+  setPinpointQuery(seed, false)
   schedulePinpointMapSync()
+  void seedPinpointQueryFromCoordinates(point, point.id)
+}
+
+function routeLabelLocationSeed(name: string) {
+  return name.match(/^(Start \/ Finish|Start|Finish|Split \d+):\s*(.+)$/)?.[2]?.trim() ?? ''
+}
+
+function setPinpointQuery(value: string, search = true) {
+  const changed = pinpointQuery.value !== value
+  if (!search && changed) suppressNextPinpointSearch = true
+  pinpointQuery.value = value
+  if (!search) clearPinpointSearchResults()
+  if (!changed) suppressNextPinpointSearch = false
 }
 
 function clearPinpointSearchResults() {
+  if (pinpointSearchTimer !== null) window.clearTimeout(pinpointSearchTimer)
+  pinpointSearchTimer = null
   pinpointSearchRequestId += 1
   pinpointSearchResults.value = []
   pinpointSearchLoading.value = false
   pinpointSearchError.value = ''
+  pinpointSearchOpen.value = false
 }
 
 async function searchPinpointLocations(query: string) {
@@ -181,6 +209,7 @@ async function searchPinpointLocations(query: string) {
   }
 
   pinpointSearchLoading.value = true
+  pinpointSearchOpen.value = true
   const requestId = ++pinpointSearchRequestId
 
   try {
@@ -196,15 +225,36 @@ async function searchPinpointLocations(query: string) {
   }
 }
 
+async function seedPinpointQueryFromCoordinates(point: StagePoint, pointId: string) {
+  const requestId = ++pinpointReverseRequestId
+  const startedWithQuery = pinpointQuery.value
+
+  try {
+    const result = await reverseLocation({ lat: point.lat, lng: point.lng })
+    if (requestId !== pinpointReverseRequestId) return
+    if (stage.pendingManualWaypointId !== pointId) return
+    if (pinpointQuery.value !== startedWithQuery) return
+
+    const nextName = (result?.query || result?.label || result?.name || '').trim()
+    if (!nextName) return
+
+    setPinpointQuery(nextName, false)
+    stage.setPendingManualWaypointName(nextName)
+  } catch {
+    if (requestId === pinpointReverseRequestId && stage.pendingManualWaypointId === pointId && !startedWithQuery) {
+      setPinpointQuery('', false)
+    }
+  }
+}
+
 function applyPinpointSearchResult(resultId: string) {
   const result = pinpointSearchResults.value.find((item) => item.id === resultId)
   if (!result) return
 
   const nextName = result.query || result.name
-  pinpointQuery.value = nextName
+  setPinpointQuery(nextName, false)
   stage.setPendingManualWaypointName(nextName)
   setPinpoint({ lat: result.lat, lng: result.lng })
-  clearPinpointSearchResults()
 }
 
 function saveRouteSnapshot() {
@@ -300,16 +350,22 @@ function confirmPendingManualWaypoint() {
   if (!point) return
   const nextName = pinpointQuery.value.trim()
   if (nextName) stage.setPendingManualWaypointName(nextName)
-  stage.placePendingManualWaypoint(point)
+  if (stage.placePendingManualWaypoint(point)) {
+    pinpointReverseRequestId += 1
+    pinpointTitle.value = ''
+    setPinpointQuery('', false)
+  }
 }
 
 function cancelPendingManualWaypoint() {
+  pinpointReverseRequestId += 1
   stage.cancelPendingManualWaypoint()
-  pinpointQuery.value = ''
-  clearPinpointSearchResults()
+  pinpointTitle.value = ''
+  setPinpointQuery('', false)
 }
 
 function destroyPinpointMap() {
+  pinpointReverseRequestId += 1
   if (pinpointResizeFrame) window.cancelAnimationFrame(pinpointResizeFrame)
   if (pinpointSearchTimer !== null) window.clearTimeout(pinpointSearchTimer)
   pinpointResizeFrame = 0
@@ -743,7 +799,7 @@ onBeforeUnmount(destroyPinpointMap)
                 {{ stage.pendingManualWaypointId ? 'Edit point' : 'Pinpoint point' }}
               </p>
               <p id="route-pinpoint-title" class="truncate text-sm font-black">
-                {{ stage.pendingManualWaypointName }}
+                {{ pinpointTitle || stage.pendingManualWaypointName }}
               </p>
               <p class="mt-1 truncate font-mono text-[11px] text-muted-foreground">
                 {{ stage.pendingManualWaypointPoint.lat.toFixed(5) }},
@@ -782,7 +838,7 @@ onBeforeUnmount(destroyPinpointMap)
               />
             </div>
             <div
-              v-if="pinpointQuery.trim().length >= 3 || pinpointSearchLoading || pinpointSearchError"
+              v-if="pinpointSearchOpen || pinpointSearchLoading || pinpointSearchError"
               class="grid max-h-32 gap-1 overflow-y-auto"
               data-testid="route-pinpoint-results"
             >

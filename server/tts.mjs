@@ -82,6 +82,17 @@ function nominatimUrl(params) {
   return url
 }
 
+function nominatimReverseUrl({ lat, lng }) {
+  const url = new URL('https://nominatim.openstreetmap.org/reverse')
+  url.searchParams.set('format', 'jsonv2')
+  url.searchParams.set('addressdetails', '1')
+  url.searchParams.set('zoom', '18')
+  url.searchParams.set('lat', String(lat))
+  url.searchParams.set('lon', String(lng))
+  url.searchParams.set('accept-language', 'en')
+  return url
+}
+
 function photonUrl(query, limit) {
   const url = new URL('https://photon.komoot.io/api/')
   url.searchParams.set('q', query)
@@ -104,6 +115,22 @@ async function fetchNominatim(url) {
 
   const payload = await upstream.json()
   return Array.isArray(payload) ? payload : []
+}
+
+async function fetchNominatimReverse(url) {
+  const upstream = await fetch(url, {
+    headers: {
+      accept: 'application/json',
+      'user-agent': 'RallyPacer/0.3.2 local-development',
+    },
+  })
+
+  if (!upstream.ok) {
+    throw new Error(`Nominatim returned ${upstream.status}`)
+  }
+
+  const payload = await upstream.json()
+  return payload && typeof payload === 'object' && payload.lat && payload.lon ? payload : null
 }
 
 async function fetchPhoton(query, limit) {
@@ -213,6 +240,33 @@ function mergeGeocodeResults(query, groups, limit) {
     .sort((first, second) => second._rank - first._rank || first._order - second._order)
     .slice(0, limit)
     .map(({ _rank, _order, ...result }) => result)
+}
+
+function normalizeReverseGeocodeResult(result) {
+  if (!result) return null
+
+  const lat = Number(result.lat)
+  const lon = Number(result.lon)
+  const displayName = clean(result.display_name)
+  if (!Number.isFinite(lat) || !Number.isFinite(lon) || !displayName) return null
+
+  return {
+    place_id: result.place_id,
+    osm_type: result.osm_type,
+    osm_id: result.osm_id,
+    lat: String(lat),
+    lon: String(lon),
+    category: clean(result.category ?? result.class),
+    class: clean(result.class ?? result.category),
+    type: clean(result.type),
+    addresstype: clean(result.addresstype),
+    name: clean(result.name) || displayName.split(',')[0]?.trim() || 'Location',
+    display_name: displayName,
+    address: result.address && typeof result.address === 'object' ? result.address : {},
+    precision: geocodePrecision(result),
+    query: displayName,
+    source: 'nominatim',
+  }
 }
 
 app.post('/api/client-log', (request, response) => {
@@ -682,6 +736,47 @@ app.get('/api/geocode/search', async (request, response) => {
     }
 
     response.status(502).json({ error: error instanceof Error ? error.message : 'Location search unavailable' })
+  }
+})
+
+app.get('/api/geocode/reverse', async (request, response) => {
+  const lat = Number(request.query.lat)
+  const lng = Number(request.query.lng)
+
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+    response.status(400).json({ error: 'Invalid coordinates' })
+    return
+  }
+
+  const cacheKey = `reverse:${lat.toFixed(5)}:${lng.toFixed(5)}`
+  const cached = geocodeCache.get(cacheKey)
+
+  if (cached && Date.now() - cached.createdAt < geocodeCacheMaxAgeMs) {
+    response.setHeader('Cache-Control', 'max-age=300')
+    response.setHeader('X-Geocode-Cache', 'hit')
+    response.json({ result: cached.result })
+    return
+  }
+
+  try {
+    const result = normalizeReverseGeocodeResult(
+      await fetchNominatimReverse(nominatimReverseUrl({ lat, lng })),
+    )
+
+    geocodeCache.set(cacheKey, { createdAt: Date.now(), result })
+
+    response.setHeader('Cache-Control', 'max-age=3600')
+    response.setHeader('X-Geocode-Cache', 'miss')
+    response.json({ result })
+  } catch (error) {
+    if (cached) {
+      response.setHeader('Cache-Control', 'max-age=60')
+      response.setHeader('X-Geocode-Cache', 'stale')
+      response.json({ result: cached.result })
+      return
+    }
+
+    response.status(502).json({ error: error instanceof Error ? error.message : 'Reverse geocode unavailable' })
   }
 })
 
