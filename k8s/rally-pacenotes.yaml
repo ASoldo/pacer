@@ -20,7 +20,7 @@ spec:
     spec:
       containers:
         - name: web
-          image: 127.0.0.1:30500/rally-pacenotes:20260623-route-library-3da2b95
+          image: 127.0.0.1:30500/rally-pacenotes:20260623-point-reverse-fe03f40
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
