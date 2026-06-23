@@ -1093,6 +1093,7 @@ watch(desktopLayout, (enabled) => {
                 :key="section.id"
                 :value="section.id"
                 class="h-9 min-w-0 gap-1"
+                :class="stageSubPanel === section.id ? 'bg-card text-primary shadow-sm ring-1 ring-border data-active:text-primary [&_svg]:text-primary' : 'text-muted-foreground'"
                 :aria-label="section.label"
               >
                 <component :is="section.icon" :size="15" />
@@ -1215,6 +1216,7 @@ watch(desktopLayout, (enabled) => {
                   :key="section.id"
                   :value="section.id"
                   class="min-w-16 gap-1"
+                  :class="stageSubPanel === section.id ? 'bg-card text-primary shadow-sm ring-1 ring-border data-active:text-primary [&_svg]:text-primary' : 'text-muted-foreground'"
                   :aria-label="section.label"
                 >
                   <component :is="section.icon" :size="15" />

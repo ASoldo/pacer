@@ -21,6 +21,7 @@ import type {
   RouteMode,
   RouteRoadAlert,
   RouteWeatherSample,
+  SavedChampionship,
   SavedStageRoute,
   SimulationState,
   SimulationSpeedMode,
@@ -59,9 +60,11 @@ const demoStage: StagePoint[] = [
 const vehicleStorageKey = 'rally-pacenotes.vehicle.v1'
 const driveRunsStorageKey = 'rally-pacenotes.drive-runs.v1'
 const savedRoutesStorageKey = 'rally-pacenotes.saved-routes.v1'
+const savedChampionshipsStorageKey = 'rally-pacenotes.saved-championships.v1'
 const maxAttemptSamples = 1_800
 const maxCircuitLapCount = 99
 const maxSavedRoutes = 48
+const maxSavedChampionships = 12
 
 function pointName(index: number, total: number, mode: RouteMode) {
   if (mode === 'closed-circuit') {
@@ -240,8 +243,23 @@ function loadSavedRoutes(): SavedStageRoute[] {
     return (JSON.parse(stored) as SavedStageRoute[]).filter((entry) =>
       entry.id
       && entry.name
-      && entry.route?.geometry?.length > 1
       && entry.waypoints?.length > 0,
+    )
+  } catch {
+    return []
+  }
+}
+
+function loadSavedChampionships(): SavedChampionship[] {
+  if (typeof localStorage === 'undefined') return []
+
+  try {
+    const stored = localStorage.getItem(savedChampionshipsStorageKey)
+    if (!stored) return []
+    return (JSON.parse(stored) as SavedChampionship[]).filter((entry) =>
+      entry.id
+      && entry.name
+      && entry.stageRouteIds?.length > 0,
     )
   } catch {
     return []
@@ -388,6 +406,7 @@ export const useStageStore = defineStore('stage', () => {
   const selectedNoteId = ref('')
   const circuitLapCount = ref(3)
   const savedRoutes = ref<SavedStageRoute[]>(loadSavedRoutes())
+  const savedChampionships = ref<SavedChampionship[]>(loadSavedChampionships())
   const loadingRoute = ref(false)
   const routeError = ref('')
   const vehicle = ref<VehicleProfile>(loadVehicle())
@@ -979,17 +998,20 @@ export const useStageStore = defineStore('stage', () => {
   }
 
   function saveCurrentRoute(routeId = '') {
-    if (!route.value) return ''
+    if (waypoints.value.length < 2) return ''
 
     const now = Date.now()
     const existing = savedRoutes.value.find((entry) => entry.id === routeId)
+    const savedRouteGeometry = route.value ? cloneRoute(route.value) : null
     const savedRoute: SavedStageRoute = {
       id: existing?.id ?? id(),
       name: stageName.value.trim() || 'Saved route',
       routeMode: routeMode.value,
       waypoints: cloneWaypoints(waypoints.value),
-      route: cloneRoute(route.value),
-      paceNotes: clonePaceNotes(paceNotes.value.length ? paceNotes.value : generatePaceNotes(route.value)),
+      route: savedRouteGeometry,
+      paceNotes: savedRouteGeometry
+        ? clonePaceNotes(paceNotes.value.length ? paceNotes.value : generatePaceNotes(savedRouteGeometry))
+        : [],
       circuitLapCount: circuitLapCount.value,
       savedAt: existing?.savedAt ?? now,
       updatedAt: now,
@@ -1010,21 +1032,60 @@ export const useStageStore = defineStore('stage', () => {
     routeMode.value = savedRoute.routeMode
     circuitLapCount.value = clamp(savedRoute.circuitLapCount || 1, 1, maxCircuitLapCount)
     waypoints.value = cloneWaypoints(savedRoute.waypoints)
-    route.value = cloneRoute(savedRoute.route)
-    paceNotes.value = clonePaceNotes(savedRoute.paceNotes.length ? savedRoute.paceNotes : generatePaceNotes(savedRoute.route))
+    clearRoute()
+    route.value = savedRoute.route ? cloneRoute(savedRoute.route) : null
+    paceNotes.value = route.value
+      ? clonePaceNotes(savedRoute.paceNotes.length ? savedRoute.paceNotes : generatePaceNotes(route.value))
+      : []
     selectedNoteId.value = paceNotes.value[1]?.id ?? paceNotes.value[0]?.id ?? ''
     routeError.value = ''
     pendingManualWaypointName.value = ''
     pendingManualWaypointPoint.value = null
-    resetSimulation()
-    resetDriveAttempt()
-    void refreshRouteWeather(route.value)
-    void refreshRouteRoadAlerts(route.value, [])
+    if (route.value) {
+      resetSimulation()
+      resetDriveAttempt()
+      void refreshRouteWeather(route.value)
+      void refreshRouteRoadAlerts(route.value, [])
+    }
     return true
   }
 
   function removeSavedRoute(routeId: string) {
     savedRoutes.value = savedRoutes.value.filter((entry) => entry.id !== routeId)
+    savedChampionships.value = savedChampionships.value
+      .map((entry) => ({
+        ...entry,
+        stageRouteIds: entry.stageRouteIds.filter((stageRouteId) => stageRouteId !== routeId),
+        updatedAt: Date.now(),
+      }))
+      .filter((entry) => entry.stageRouteIds.length > 0)
+  }
+
+  function saveChampionship(name: string, stageRouteIds: string[], championshipId = '') {
+    const routeIds = [...new Set(stageRouteIds.filter((routeId) =>
+      savedRoutes.value.some((entry) => entry.id === routeId),
+    ))]
+    if (routeIds.length === 0) return ''
+
+    const now = Date.now()
+    const existing = savedChampionships.value.find((entry) => entry.id === championshipId)
+    const championship: SavedChampionship = {
+      id: existing?.id ?? id(),
+      name: name.trim() || 'Custom championship',
+      stageRouteIds: routeIds,
+      savedAt: existing?.savedAt ?? now,
+      updatedAt: now,
+    }
+
+    savedChampionships.value = [
+      championship,
+      ...savedChampionships.value.filter((entry) => entry.id !== championship.id),
+    ].slice(0, maxSavedChampionships)
+    return championship.id
+  }
+
+  function removeChampionship(championshipId: string) {
+    savedChampionships.value = savedChampionships.value.filter((entry) => entry.id !== championshipId)
   }
 
   async function refreshRouteWeather(targetRoute = route.value) {
@@ -1641,6 +1702,15 @@ export const useStageStore = defineStore('stage', () => {
     { deep: true },
   )
 
+  watch(
+    savedChampionships,
+    (value) => {
+      if (typeof localStorage === 'undefined') return
+      localStorage.setItem(savedChampionshipsStorageKey, JSON.stringify(value))
+    },
+    { deep: true },
+  )
+
   return {
     stageName,
     routeMode,
@@ -1650,6 +1720,7 @@ export const useStageStore = defineStore('stage', () => {
     selectedNoteId,
     circuitLapCount,
     savedRoutes,
+    savedChampionships,
     loadingRoute,
     routeError,
     vehicle,
@@ -1722,6 +1793,8 @@ export const useStageStore = defineStore('stage', () => {
     saveCurrentRoute,
     loadSavedRoute,
     removeSavedRoute,
+    saveChampionship,
+    removeChampionship,
     regenerateNotes,
     refreshRouteWeather,
     refreshRouteRoadAlerts,

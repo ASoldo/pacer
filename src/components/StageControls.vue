@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useSortable } from '@vueuse/integrations/useSortable'
 import L from 'leaflet'
 import {
@@ -19,6 +19,7 @@ import {
   Save,
   Search,
   Trash2,
+  Trophy,
   X,
 } from '@lucide/vue'
 import { useStageStore } from '../stores/stage'
@@ -43,8 +44,15 @@ import {
 } from '@/components/ui/empty'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 
 const stage = useStageStore()
 const circuitLapInput = ref(String(stage.circuitLapCount))
@@ -57,9 +65,20 @@ const pinpointSearchLoading = ref(false)
 const pinpointSearchError = ref('')
 const pinpointSearchOpen = ref(false)
 const selectedSavedRouteId = ref('')
+const selectedChampionshipId = ref('')
+const championshipName = ref('Custom Championship')
 const pointListEl = ref<HTMLElement | null>(null)
 const pinpointMapEl = ref<HTMLElement | null>(null)
 const draggedPointId = ref('')
+const selectedSavedRoute = computed(() =>
+  stage.savedRoutes.find((entry) => entry.id === selectedSavedRouteId.value) ?? null,
+)
+const savedRouteMenuLabel = computed(() => selectedSavedRoute.value?.name ?? 'Saved stages')
+const savedChampionships = computed(() => stage.savedChampionships ?? [])
+const selectedChampionship = computed(() =>
+  savedChampionships.value.find((entry) => entry.id === selectedChampionshipId.value) ?? null,
+)
+const championshipMenuLabel = computed(() => selectedChampionship.value?.name ?? 'Championships')
 let searchTimer: number | null = null
 let pinpointSearchTimer: number | null = null
 let pinpointSearchRequestId = 0
@@ -262,6 +281,11 @@ function saveRouteSnapshot() {
   if (savedRouteId) selectedSavedRouteId.value = savedRouteId
 }
 
+function selectSavedRoute(routeId: string) {
+  selectedSavedRouteId.value = routeId
+  loadSavedRoute(routeId)
+}
+
 function loadSavedRoute(routeId: string) {
   if (!routeId) return
   stage.loadSavedRoute(routeId)
@@ -272,12 +296,58 @@ function deleteSelectedSavedRoute() {
   if (!routeId) return
   stage.removeSavedRoute(routeId)
   selectedSavedRouteId.value = ''
+  if (selectedChampionship.value?.stageRouteIds.includes(routeId)) selectedChampionshipId.value = ''
 }
 
 function savedRouteLabel(savedRouteId: string) {
   const savedRoute = stage.savedRoutes.find((entry) => entry.id === savedRouteId)
   if (!savedRoute) return 'Saved routes'
-  return `${savedRoute.name} - ${formatMeters(savedRoute.route.distance)}`
+  const routeStatus = savedRoute.route
+    ? `${formatMeters(savedRoute.route.distance)} drive-ready`
+    : `${savedRoute.waypoints.length} points draft`
+  return `${savedRoute.name} - ${routeStatus}`
+}
+
+function savedRouteStatus(savedRouteId: string) {
+  const savedRoute = stage.savedRoutes.find((entry) => entry.id === savedRouteId)
+  if (!savedRoute) return ''
+  return savedRoute.route
+    ? `${formatMeters(savedRoute.route.distance)} - drive-ready`
+    : `${savedRoute.waypoints.length} points - build before drive`
+}
+
+function saveChampionshipSnapshot() {
+  const routeIds = stage.savedRoutes.map((entry) => entry.id)
+  const championshipId = stage.saveChampionship(championshipName.value, routeIds, selectedChampionshipId.value)
+  if (championshipId) selectedChampionshipId.value = championshipId
+}
+
+function selectChampionship(championshipId: string) {
+  const championship = savedChampionships.value.find((entry) => entry.id === championshipId)
+  if (!championship) return
+
+  selectedChampionshipId.value = championship.id
+  championshipName.value = championship.name
+  const firstRouteId = championship.stageRouteIds.find((routeId) =>
+    stage.savedRoutes.some((entry) => entry.id === routeId),
+  )
+  if (firstRouteId) selectSavedRoute(firstRouteId)
+}
+
+function deleteSelectedChampionship() {
+  const championshipId = selectedChampionshipId.value
+  if (!championshipId) return
+  stage.removeChampionship(championshipId)
+  selectedChampionshipId.value = ''
+}
+
+function championshipStatus(championshipId: string) {
+  const championship = savedChampionships.value.find((entry) => entry.id === championshipId)
+  if (!championship) return ''
+  const validStages = championship.stageRouteIds.filter((routeId) =>
+    stage.savedRoutes.some((entry) => entry.id === routeId),
+  ).length
+  return `${validStages} ${validStages === 1 ? 'stage' : 'stages'}`
 }
 
 function setPinpoint(point: LatLng) {
@@ -611,33 +681,73 @@ onBeforeUnmount(destroyPinpointMap)
         </Button>
 
         <div class="grid gap-2 rounded-md border bg-muted/10 p-2">
-          <div class="grid grid-cols-[minmax(0,1fr)_auto_auto] gap-2">
-            <NativeSelect
-              v-model="selectedSavedRouteId"
-              title="Saved routes"
-              aria-label="Saved routes"
-              @change="loadSavedRoute(selectedSavedRouteId)"
-            >
-              <NativeSelectOption value="">Saved routes</NativeSelectOption>
-              <NativeSelectOption
-                v-for="savedRoute in stage.savedRoutes"
-                :key="savedRoute.id"
-                :value="savedRoute.id"
-              >
-                {{ savedRoute.name }}
-              </NativeSelectOption>
-            </NativeSelect>
+          <div class="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+            <DropdownMenu :modal="false">
+              <DropdownMenuTrigger as-child>
+                <Button
+                  variant="outline"
+                  class="min-w-0 justify-between px-3 text-left"
+                  type="button"
+                  aria-label="Saved stages"
+                  title="Saved stages"
+                  data-testid="saved-stage-trigger"
+                >
+                  <span class="truncate">{{ savedRouteMenuLabel }}</span>
+                  <ChevronDown :size="14" class="shrink-0 text-muted-foreground" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" side="bottom" class="max-h-72 p-1" data-testid="saved-stage-menu">
+                <DropdownMenuLabel class="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+                  Stage library
+                </DropdownMenuLabel>
+                <DropdownMenuItem
+                  v-if="stage.savedRoutes.length === 0"
+                  disabled
+                  class="text-xs text-muted-foreground"
+                >
+                  No saved stages
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  v-for="savedRoute in stage.savedRoutes"
+                  :key="savedRoute.id"
+                  class="grid min-w-0 grid-cols-[1fr_auto] items-center gap-2 py-2"
+                  @select.prevent="selectSavedRoute(savedRoute.id)"
+                >
+                  <span class="min-w-0">
+                    <b class="block truncate text-xs text-foreground">{{ savedRoute.name }}</b>
+                    <span class="block truncate text-[11px] text-muted-foreground">
+                      {{ savedRouteStatus(savedRoute.id) }}
+                    </span>
+                  </span>
+                  <Check v-if="selectedSavedRouteId === savedRoute.id" :size="14" class="text-primary" />
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  :disabled="stage.waypoints.length < 2"
+                  class="gap-2 text-xs font-semibold"
+                  @select.prevent="saveRouteSnapshot"
+                >
+                  <Save :size="13" />
+                  Save current stage
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
             <Button
-              variant="outline"
-              size="icon-sm"
               type="button"
-              :disabled="!stage.route"
-              aria-label="Save active route"
-              title="Save active route"
+              class="justify-center px-3"
+              :disabled="stage.waypoints.length < 2"
+              aria-label="Save current stage"
+              title="Save current stage"
               @click="saveRouteSnapshot"
             >
               <Save :size="13" />
+              Save
             </Button>
+          </div>
+          <div class="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+            <p class="min-w-0 truncate text-[11px] text-muted-foreground">
+              {{ selectedSavedRouteId ? savedRouteLabel(selectedSavedRouteId) : 'Save point drafts or built stages for later recce and drive setup.' }}
+            </p>
             <Button
               variant="outline"
               size="icon-sm"
@@ -650,9 +760,85 @@ onBeforeUnmount(destroyPinpointMap)
               <Trash2 :size="13" />
             </Button>
           </div>
-          <p class="truncate text-[11px] text-muted-foreground">
-            {{ selectedSavedRouteId ? savedRouteLabel(selectedSavedRouteId) : 'Save built routes for later recce or drive setup.' }}
-          </p>
+
+          <div class="grid gap-2 border-t pt-2">
+            <div class="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+              <Input
+                v-model="championshipName"
+                class="h-8 text-xs font-semibold"
+                autocomplete="off"
+                title="Championship name"
+                placeholder="Championship name"
+              />
+              <Button
+                variant="outline"
+                size="sm"
+                type="button"
+                class="h-8 gap-1.5 px-2 text-xs"
+                :disabled="stage.savedRoutes.length === 0"
+                aria-label="Save championship"
+                title="Save championship from saved stages"
+                @click="saveChampionshipSnapshot"
+              >
+                <Trophy :size="13" />
+                Save
+              </Button>
+            </div>
+            <div class="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+              <DropdownMenu :modal="false">
+                <DropdownMenuTrigger as-child>
+                  <Button
+                    variant="outline"
+                    class="h-8 min-w-0 justify-between px-3 text-left text-xs"
+                    type="button"
+                    aria-label="Saved championships"
+                    title="Saved championships"
+                    data-testid="saved-championship-trigger"
+                  >
+                    <span class="truncate">{{ championshipMenuLabel }}</span>
+                    <ChevronDown :size="14" class="shrink-0 text-muted-foreground" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" side="bottom" class="max-h-72 p-1" data-testid="saved-championship-menu">
+                  <DropdownMenuLabel class="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+                    Custom championships
+                  </DropdownMenuLabel>
+                  <DropdownMenuItem
+                    v-if="savedChampionships.length === 0"
+                    disabled
+                    class="text-xs text-muted-foreground"
+                  >
+                    No championships
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    v-for="championship in savedChampionships"
+                    :key="championship.id"
+                    class="grid min-w-0 grid-cols-[1fr_auto] items-center gap-2 py-2"
+                    @select.prevent="selectChampionship(championship.id)"
+                  >
+                    <span class="min-w-0">
+                      <b class="block truncate text-xs text-foreground">{{ championship.name }}</b>
+                      <span class="block truncate text-[11px] text-muted-foreground">
+                        {{ championshipStatus(championship.id) }}
+                      </span>
+                    </span>
+                    <Check v-if="selectedChampionshipId === championship.id" :size="14" class="text-primary" />
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+              <Button
+                variant="outline"
+                size="icon-sm"
+                type="button"
+                :disabled="!selectedChampionshipId"
+                aria-label="Delete championship"
+                title="Delete championship"
+                @click="deleteSelectedChampionship"
+              >
+                <Trash2 :size="13" />
+              </Button>
+            </div>
+          </div>
         </div>
       </CardContent>
     </Card>

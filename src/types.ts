@@ -16,9 +16,17 @@ export type SavedStageRoute = {
   name: string
   routeMode: RouteMode
   waypoints: StagePoint[]
-  route: RouteInfo
+  route: RouteInfo | null
   paceNotes: PaceNote[]
   circuitLapCount: number
+  savedAt: number
+  updatedAt: number
+}
+
+export type SavedChampionship = {
+  id: string
+  name: string
+  stageRouteIds: string[]
   savedAt: number
   updatedAt: number
 }

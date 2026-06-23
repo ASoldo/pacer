@@ -1138,7 +1138,7 @@ function focusManualPlacement() {
 function savedRouteRenderKey() {
   if (!props.showSavedRoutes) return ''
   return props.savedRoutes
-    .map((savedRoute) => `${savedRoute.id}:${savedRoute.updatedAt}:${savedRoute.route.geometry.length}`)
+    .map((savedRoute) => `${savedRoute.id}:${savedRoute.updatedAt}:${savedRoute.route?.geometry.length ?? 0}`)
     .join('|')
 }
 
@@ -1158,6 +1158,7 @@ function renderSavedRoutes() {
   const colors = ['#22c55e', '#38bdf8', '#f59e0b', '#f43f5e', '#a78bfa']
 
   props.savedRoutes.forEach((savedRoute, index) => {
+    if (!savedRoute.route) return
     const tuples = savedRoute.route.geometry.map((point) => [point.lat, point.lng] as L.LatLngTuple)
     if (tuples.length < 2) return
 
