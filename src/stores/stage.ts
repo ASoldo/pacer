@@ -435,6 +435,7 @@ export const useStageStore = defineStore('stage', () => {
   const locationSearchResults = ref<LocationSearchResult[]>([])
   const locationSearchLoading = ref(false)
   const locationSearchError = ref('')
+  const pendingManualWaypointId = ref('')
   const pendingManualWaypointName = ref('')
   const pendingManualWaypointPoint = ref<LatLng | null>(null)
   let routeWeatherRequestId = 0
@@ -791,8 +792,7 @@ export const useStageStore = defineStore('stage', () => {
   function addSearchResultWaypoint(result: LocationSearchResult) {
     const requestedName = result.query || result.name
     if (result.precision !== 'address') {
-      pendingManualWaypointName.value = requestedName
-      pendingManualWaypointPoint.value = { lat: result.lat, lng: result.lng }
+      beginPendingManualWaypoint(requestedName, { lat: result.lat, lng: result.lng })
       return 'manual' as const
     }
 
@@ -800,22 +800,63 @@ export const useStageStore = defineStore('stage', () => {
     return 'added' as const
   }
 
+  function beginPendingManualWaypoint(name: string, point: LatLng, waypointId = '') {
+    pendingManualWaypointId.value = waypointId
+    pendingManualWaypointName.value = name.trim()
+    pendingManualWaypointPoint.value = { lat: point.lat, lng: point.lng }
+  }
+
   function setPendingManualWaypointPoint(point: LatLng) {
     if (!pendingManualWaypointName.value) return
     pendingManualWaypointPoint.value = { lat: point.lat, lng: point.lng }
   }
 
+  function setPendingManualWaypointName(name: string) {
+    if (!pendingManualWaypointName.value) return
+    pendingManualWaypointName.value = name.trim()
+  }
+
+  function waypointEditedName(pointId: string, requestedName: string) {
+    const point = waypoints.value.find((entry) => entry.id === pointId)
+    const cleanName = requestedName.trim()
+    if (!point || !cleanName) return cleanName
+
+    const base = point.name.match(/^(Start \/ Finish|Start|Finish|Split \d+)/)?.[1] ?? ''
+    if (!base || cleanName.startsWith(base)) return cleanName
+    return `${base}: ${cleanName}`
+  }
+
   function placePendingManualWaypoint(point: LatLng) {
     const name = pendingManualWaypointName.value.trim()
+    const pointId = pendingManualWaypointId.value
     if (!name) return false
 
+    pendingManualWaypointId.value = ''
     pendingManualWaypointName.value = ''
     pendingManualWaypointPoint.value = null
+    if (pointId) {
+      let changed = false
+      const nextName = waypointEditedName(pointId, name)
+      waypoints.value = waypoints.value.map((entry) => {
+        if (entry.id !== pointId) return entry
+        changed = true
+        return {
+          ...entry,
+          name: nextName || entry.name,
+          lat: point.lat,
+          lng: point.lng,
+        }
+      })
+      if (changed) clearRoute()
+      return changed
+    }
+
     addWaypoint(point, name)
     return true
   }
 
   function cancelPendingManualWaypoint() {
+    pendingManualWaypointId.value = ''
     pendingManualWaypointName.value = ''
     pendingManualWaypointPoint.value = null
   }
@@ -1634,6 +1675,7 @@ export const useStageStore = defineStore('stage', () => {
     locationSearchResults,
     locationSearchLoading,
     locationSearchError,
+    pendingManualWaypointId,
     pendingManualWaypointName,
     pendingManualWaypointPoint,
     hasRoute,
@@ -1662,7 +1704,9 @@ export const useStageStore = defineStore('stage', () => {
     currentDriveRun,
     addWaypoint,
     addSearchResultWaypoint,
+    beginPendingManualWaypoint,
     setPendingManualWaypointPoint,
+    setPendingManualWaypointName,
     placePendingManualWaypoint,
     cancelPendingManualWaypoint,
     updateWaypointPosition,

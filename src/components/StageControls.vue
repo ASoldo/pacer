@@ -12,6 +12,7 @@ import {
   LocateFixed,
   MapPinPlus,
   Milestone,
+  Pencil,
   RefreshCw,
   Route,
   RotateCcw,
@@ -21,7 +22,8 @@ import {
   X,
 } from '@lucide/vue'
 import { useStageStore } from '../stores/stage'
-import type { LatLng } from '../types'
+import { searchLocations } from '../services/geocoding'
+import type { LatLng, LocationSearchResult, StagePoint } from '../types'
 import { formatMeters } from '../utils/geo'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
@@ -48,11 +50,17 @@ const stage = useStageStore()
 const circuitLapInput = ref(String(stage.circuitLapCount))
 const circuitLapFocused = ref(false)
 const locationQuery = ref('')
+const pinpointQuery = ref('')
+const pinpointSearchResults = ref<LocationSearchResult[]>([])
+const pinpointSearchLoading = ref(false)
+const pinpointSearchError = ref('')
 const selectedSavedRouteId = ref('')
 const pointListEl = ref<HTMLElement | null>(null)
 const pinpointMapEl = ref<HTMLElement | null>(null)
 const draggedPointId = ref('')
 let searchTimer: number | null = null
+let pinpointSearchTimer: number | null = null
+let pinpointSearchRequestId = 0
 let pinpointMap: L.Map | null = null
 let pinpointTileLayer: L.TileLayer | null = null
 let pinpointMarker: L.Marker | null = null
@@ -78,6 +86,14 @@ watch(locationQuery, (query) => {
   searchTimer = window.setTimeout(() => {
     searchTimer = null
     void stage.searchRouteLocations(query)
+  }, 320)
+})
+
+watch(pinpointQuery, (query) => {
+  if (pinpointSearchTimer !== null) window.clearTimeout(pinpointSearchTimer)
+  pinpointSearchTimer = window.setTimeout(() => {
+    pinpointSearchTimer = null
+    void searchPinpointLocations(query)
   }, 320)
 })
 
@@ -134,7 +150,61 @@ function addSearchResult(resultId: string) {
 
   const outcome = stage.addSearchResultWaypoint(result)
   locationQuery.value = ''
-  if (outcome === 'manual') schedulePinpointMapSync()
+  if (outcome === 'manual') {
+    pinpointQuery.value = stage.pendingManualWaypointName
+    clearPinpointSearchResults()
+    schedulePinpointMapSync()
+  }
+}
+
+function editWaypoint(point: StagePoint) {
+  stage.beginPendingManualWaypoint(point.name, { lat: point.lat, lng: point.lng }, point.id)
+  pinpointQuery.value = point.name
+  clearPinpointSearchResults()
+  schedulePinpointMapSync()
+}
+
+function clearPinpointSearchResults() {
+  pinpointSearchRequestId += 1
+  pinpointSearchResults.value = []
+  pinpointSearchLoading.value = false
+  pinpointSearchError.value = ''
+}
+
+async function searchPinpointLocations(query: string) {
+  const trimmed = query.trim()
+  pinpointSearchError.value = ''
+
+  if (!stage.pendingManualWaypointName || trimmed.length < 3) {
+    clearPinpointSearchResults()
+    return
+  }
+
+  pinpointSearchLoading.value = true
+  const requestId = ++pinpointSearchRequestId
+
+  try {
+    const results = await searchLocations(trimmed)
+    if (requestId !== pinpointSearchRequestId) return
+    pinpointSearchResults.value = results
+  } catch (error) {
+    if (requestId !== pinpointSearchRequestId) return
+    pinpointSearchResults.value = []
+    pinpointSearchError.value = error instanceof Error ? error.message : 'Location search failed.'
+  } finally {
+    if (requestId === pinpointSearchRequestId) pinpointSearchLoading.value = false
+  }
+}
+
+function applyPinpointSearchResult(resultId: string) {
+  const result = pinpointSearchResults.value.find((item) => item.id === resultId)
+  if (!result) return
+
+  const nextName = result.query || result.name
+  pinpointQuery.value = nextName
+  stage.setPendingManualWaypointName(nextName)
+  setPinpoint({ lat: result.lat, lng: result.lng })
+  clearPinpointSearchResults()
 }
 
 function saveRouteSnapshot() {
@@ -228,16 +298,22 @@ function syncPinpointMap() {
 function confirmPendingManualWaypoint() {
   const point = stage.pendingManualWaypointPoint
   if (!point) return
+  const nextName = pinpointQuery.value.trim()
+  if (nextName) stage.setPendingManualWaypointName(nextName)
   stage.placePendingManualWaypoint(point)
 }
 
 function cancelPendingManualWaypoint() {
   stage.cancelPendingManualWaypoint()
+  pinpointQuery.value = ''
+  clearPinpointSearchResults()
 }
 
 function destroyPinpointMap() {
   if (pinpointResizeFrame) window.cancelAnimationFrame(pinpointResizeFrame)
+  if (pinpointSearchTimer !== null) window.clearTimeout(pinpointSearchTimer)
   pinpointResizeFrame = 0
+  pinpointSearchTimer = null
   pinpointMap?.remove()
   pinpointMap = null
   pinpointTileLayer = null
@@ -574,7 +650,7 @@ onBeforeUnmount(destroyPinpointMap)
         v-for="(point, index) in stage.waypoints"
         :key="point.id"
         :data-point-id="point.id"
-        class="grid grid-cols-[auto_1fr_auto_auto_auto] items-center gap-1.5 rounded-md border bg-card p-2 transition"
+        class="grid grid-cols-[auto_1fr_auto_auto_auto_auto] items-center gap-1.5 rounded-md border bg-card p-2 transition"
         :class="draggedPointId === point.id ? 'opacity-45 ring-1 ring-primary/40' : 'hover:bg-muted/35'"
       >
         <button
@@ -597,6 +673,16 @@ onBeforeUnmount(destroyPinpointMap)
             {{ point.lat.toFixed(5) }}, {{ point.lng.toFixed(5) }}
           </p>
         </div>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-label="Edit point"
+          title="Edit point"
+          type="button"
+          @click="editWaypoint(point)"
+        >
+          <Pencil :size="13" />
+        </Button>
         <Button
           variant="ghost"
           size="icon-sm"
@@ -653,6 +739,9 @@ onBeforeUnmount(destroyPinpointMap)
         <section class="grid w-[min(24rem,calc(100vw_-_1.5rem))] gap-3 rounded-lg border bg-card p-3 text-card-foreground shadow-2xl">
           <header class="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2">
             <div class="min-w-0">
+              <p class="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+                {{ stage.pendingManualWaypointId ? 'Edit point' : 'Pinpoint point' }}
+              </p>
               <p id="route-pinpoint-title" class="truncate text-sm font-black">
                 {{ stage.pendingManualWaypointName }}
               </p>
@@ -672,6 +761,60 @@ onBeforeUnmount(destroyPinpointMap)
               <X :size="14" />
             </Button>
           </header>
+          <div class="grid gap-2">
+            <Label for="route-pinpoint-search" class="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+              Search
+            </Label>
+            <div class="relative">
+              <Search
+                :size="15"
+                class="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground"
+              />
+              <Input
+                id="route-pinpoint-search"
+                v-model="pinpointQuery"
+                class="pl-8"
+                autocomplete="off"
+                placeholder="Street, number, place"
+                title="Search for point location"
+                data-testid="route-pinpoint-search"
+                @keydown.enter.prevent="pinpointSearchResults[0] && applyPinpointSearchResult(pinpointSearchResults[0].id)"
+              />
+            </div>
+            <div
+              v-if="pinpointQuery.trim().length >= 3 || pinpointSearchLoading || pinpointSearchError"
+              class="grid max-h-32 gap-1 overflow-y-auto"
+              data-testid="route-pinpoint-results"
+            >
+              <button
+                v-for="result in pinpointSearchResults"
+                :key="result.id"
+                class="grid min-w-0 grid-cols-[auto_1fr] items-center gap-2 rounded-md border bg-background/80 p-2 text-left text-xs transition hover:bg-muted/60"
+                type="button"
+                :title="result.label"
+                @click="applyPinpointSearchResult(result.id)"
+              >
+                <MapPinPlus :size="15" class="text-primary" />
+                <span class="min-w-0">
+                  <b class="flex min-w-0 items-center gap-1.5 text-foreground">
+                    <span class="truncate">{{ result.name }}</span>
+                    <small
+                      v-if="result.precision !== 'address'"
+                      class="shrink-0 rounded border border-amber-500/40 bg-amber-500/10 px-1 py-0.5 text-[9px] font-black uppercase tracking-[0.08em] text-amber-400"
+                    >
+                      pinpoint
+                    </small>
+                  </b>
+                  <span class="block truncate text-muted-foreground">{{ result.label }}</span>
+                </span>
+              </button>
+              <p v-if="pinpointSearchLoading" class="px-1 text-xs text-muted-foreground">Searching</p>
+              <p v-else-if="pinpointSearchError" class="px-1 text-xs text-destructive">{{ pinpointSearchError }}</p>
+              <p v-else-if="pinpointQuery.trim().length >= 3 && pinpointSearchResults.length === 0" class="px-1 text-xs text-muted-foreground">
+                No results
+              </p>
+            </div>
+          </div>
           <div
             ref="pinpointMapEl"
             class="h-56 overflow-hidden rounded-md border bg-muted"
@@ -709,6 +852,8 @@ onBeforeUnmount(destroyPinpointMap)
 :global(.route-pinpoint-marker) {
   display: grid;
   place-items: center;
+  pointer-events: auto !important;
+  z-index: 1000 !important;
 }
 
 :global(.route-pinpoint-marker span) {
@@ -718,8 +863,8 @@ onBeforeUnmount(destroyPinpointMap)
   height: 28px;
   border: 2px solid hsl(var(--background));
   border-radius: 999px 999px 999px 0;
-  background: hsl(var(--primary));
-  box-shadow: 0 0 0 2px hsl(var(--primary) / 0.38), 0 10px 22px hsl(0 0% 0% / 0.38);
+  background: #22c55e;
+  box-shadow: 0 0 0 3px hsl(var(--background) / 0.75), 0 0 0 7px rgb(34 197 94 / 0.28), 0 12px 24px hsl(0 0% 0% / 0.48);
   transform: rotate(-45deg);
 }
 
