@@ -808,6 +808,20 @@ export const useStageStore = defineStore('stage', () => {
     clearRoute()
   }
 
+  function moveWaypointToIndex(pointId: string, targetIndex: number) {
+    const currentIndex = waypoints.value.findIndex((point) => point.id === pointId)
+    if (currentIndex < 0) return
+
+    const nextIndex = clamp(Math.round(targetIndex), 0, waypoints.value.length - 1)
+    if (currentIndex === nextIndex) return
+
+    const next = [...waypoints.value]
+    const [point] = next.splice(currentIndex, 1)
+    next.splice(nextIndex, 0, point)
+    waypoints.value = renamePoints(next, routeMode.value)
+    clearRoute()
+  }
+
   function renameWaypoint(pointId: string, name: string) {
     const nextName = name.trim()
     waypoints.value = waypoints.value.map((entry) =>
@@ -1546,6 +1560,7 @@ export const useStageStore = defineStore('stage', () => {
     updateWaypointPosition,
     moveWaypoint,
     moveWaypointBefore,
+    moveWaypointToIndex,
     renameWaypoint,
     removeWaypoint,
     reverseWaypoints,

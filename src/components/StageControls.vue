@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
+import { useSortable } from '@vueuse/integrations/useSortable'
 import {
   ChevronDown,
   ChevronUp,
@@ -44,6 +45,7 @@ const emit = defineEmits<{
 const circuitLapInput = ref(String(stage.circuitLapCount))
 const circuitLapFocused = ref(false)
 const locationQuery = ref('')
+const pointListEl = ref<HTMLElement | null>(null)
 const draggedPointId = ref('')
 let searchTimer: number | null = null
 
@@ -118,23 +120,31 @@ function addSearchResult(resultId: string) {
   if (outcome === 'manual') emit('manual-place')
 }
 
-function startPointDrag(pointId: string, event: DragEvent) {
-  draggedPointId.value = pointId
-  event.dataTransfer?.setData('text/plain', pointId)
-  if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move'
-}
+useSortable(pointListEl, stage.waypoints, {
+  animation: 150,
+  chosenClass: 'waypoint-sortable-chosen',
+  dragClass: 'waypoint-sortable-drag',
+  draggable: '[data-point-id]',
+  fallbackOnBody: true,
+  ghostClass: 'waypoint-sortable-ghost',
+  handle: '[data-point-drag-handle]',
+  swapThreshold: 0.65,
+  delay: 90,
+  delayOnTouchOnly: true,
+  touchStartThreshold: 4,
+  onStart(event) {
+    draggedPointId.value = (event.item as HTMLElement).dataset.pointId ?? ''
+  },
+  onEnd() {
+    draggedPointId.value = ''
+  },
+  onUpdate(event) {
+    const pointId = (event.item as HTMLElement).dataset.pointId ?? ''
+    if (!pointId || typeof event.newIndex !== 'number') return
 
-function dropPoint(targetPointId: string, event: DragEvent) {
-  event.preventDefault()
-  const sourcePointId = event.dataTransfer?.getData('text/plain') || draggedPointId.value
-  draggedPointId.value = ''
-  if (!sourcePointId) return
-  stage.moveWaypointBefore(sourcePointId, targetPointId)
-}
-
-function endPointDrag() {
-  draggedPointId.value = ''
-}
+    stage.moveWaypointToIndex(pointId, event.newIndex)
+  },
+})
 </script>
 
 <template>
@@ -371,25 +381,20 @@ function endPointDrag() {
       </CardContent>
     </Card>
 
-    <div class="flex flex-col gap-2">
+    <div ref="pointListEl" class="flex flex-col gap-2">
       <article
         v-for="(point, index) in stage.waypoints"
         :key="point.id"
+        :data-point-id="point.id"
         class="grid grid-cols-[auto_1fr_auto_auto_auto] items-center gap-1.5 rounded-md border bg-card p-2 transition"
-        :class="draggedPointId === point.id ? 'opacity-45' : 'hover:bg-muted/35'"
-        draggable="true"
-        @dragstart="startPointDrag(point.id, $event)"
-        @dragend="endPointDrag"
-        @dragover.prevent
-        @drop="dropPoint(point.id, $event)"
+        :class="draggedPointId === point.id ? 'opacity-45 ring-1 ring-primary/40' : 'hover:bg-muted/35'"
       >
         <button
-          class="grid h-8 w-6 cursor-grab place-items-center rounded text-muted-foreground active:cursor-grabbing"
+          class="grid h-8 w-6 touch-none cursor-grab select-none place-items-center rounded text-muted-foreground active:cursor-grabbing"
           type="button"
           title="Drag to reorder point"
           aria-label="Drag to reorder point"
-          draggable="true"
-          @dragstart="startPointDrag(point.id, $event)"
+          data-point-drag-handle
         >
           <GripVertical :size="15" />
         </button>
@@ -449,3 +454,18 @@ function endPointDrag() {
     </div>
   </section>
 </template>
+
+<style scoped>
+.waypoint-sortable-ghost {
+  opacity: 0.35;
+}
+
+.waypoint-sortable-chosen {
+  border-color: hsl(var(--primary) / 0.65);
+  box-shadow: 0 0 0 1px hsl(var(--primary) / 0.35);
+}
+
+.waypoint-sortable-drag {
+  opacity: 0.95;
+}
+</style>
