@@ -133,11 +133,6 @@ function addPoint(point: LatLng) {
   stage.addWaypoint(point)
 }
 
-function handleManualWaypointPlacement() {
-  selectEditorPanel('stage')
-  if (!desktopLayout.value) ui.setStageSubPanel('map')
-}
-
 function noteTriggerDistance(note: PaceNote) {
   return Math.min(Math.max(note.distance + stage.speech.callOffsetMeters, 0), stage.totalDistance)
 }
@@ -781,15 +776,11 @@ watch(
 
 watch(
   () => stage.route,
-  (route) => {
+  () => {
     resetSpeechTracking()
     routeSummarySpokenKey.value = ''
     speech.cancel()
     stopGpsDrive()
-    if (route && !desktopLayout.value && !driveMode.value) {
-      ui.setEditorPanel('stage')
-      ui.setStageSubPanel('map')
-    }
   },
 )
 
@@ -1109,10 +1100,7 @@ watch(desktopLayout, (enabled) => {
               </TabsTrigger>
             </TabsList>
           </Tabs>
-          <StageControls
-            v-if="stageSubPanel === 'route' || stageSubPanel === 'map'"
-            @manual-place="handleManualWaypointPlacement"
-          />
+          <StageControls v-if="stageSubPanel === 'route' || stageSubPanel === 'map'" />
           <PaceNotesPanel
             v-else-if="stageSubPanel === 'notes'"
             :last-error="speech.lastError.value"
@@ -1143,6 +1131,8 @@ watch(desktopLayout, (enabled) => {
           :route-mode="stage.routeMode"
           :manual-placement-label="stage.pendingManualWaypointName"
           :manual-placement-point="stage.pendingManualWaypointPoint"
+          :saved-routes="stageSubPanel === 'map' && !driveMode ? stage.savedRoutes : []"
+          :show-saved-routes="stageSubPanel === 'map' && !driveMode"
           :selected-note-id="stage.selectedNoteId"
           :show-note-markers="true"
           :waypoints="stage.waypoints"
@@ -1235,7 +1225,7 @@ watch(desktopLayout, (enabled) => {
           </div>
 
           <div v-if="stageSubPanel === 'route'" class="min-h-0 overflow-y-auto" data-testid="setup-panel">
-            <StageControls @manual-place="handleManualWaypointPlacement" />
+            <StageControls />
           </div>
 
           <section
@@ -1256,6 +1246,8 @@ watch(desktopLayout, (enabled) => {
               :route-mode="stage.routeMode"
               :manual-placement-label="stage.pendingManualWaypointName"
               :manual-placement-point="stage.pendingManualWaypointPoint"
+              :saved-routes="stageSubPanel === 'map' && !driveMode ? stage.savedRoutes : []"
+              :show-saved-routes="stageSubPanel === 'map' && !driveMode"
               :selected-note-id="stage.selectedNoteId"
               :show-note-markers="true"
               :waypoints="stage.waypoints"
@@ -1351,12 +1343,12 @@ watch(desktopLayout, (enabled) => {
           v-for="section in editorSections"
           :key="section.id"
           :value="section.id"
-          class="grid h-11 grid-rows-[auto_auto] gap-0.5 px-1 py-1"
+          class="grid h-11 grid-rows-[1.25rem_1rem] place-items-center gap-0.5 px-1 py-1 text-center [&>svg]:mx-auto"
           :aria-label="section.label"
           :title="section.label"
         >
           <component :is="section.icon" :size="17" />
-          <span class="max-w-16 truncate text-[0.62rem] leading-none">{{ section.label }}</span>
+          <span class="block max-w-16 truncate text-center text-[0.62rem] leading-none">{{ section.label }}</span>
         </TabsTrigger>
       </TabsList>
     </Tabs>

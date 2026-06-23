@@ -11,6 +11,18 @@ export type StagePoint = LatLng & {
   name: string
 }
 
+export type SavedStageRoute = {
+  id: string
+  name: string
+  routeMode: RouteMode
+  waypoints: StagePoint[]
+  route: RouteInfo
+  paceNotes: PaceNote[]
+  circuitLapCount: number
+  savedAt: number
+  updatedAt: number
+}
+
 export type LocationSearchResult = LatLng & {
   id: string
   label: string

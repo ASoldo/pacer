@@ -21,6 +21,7 @@ import type {
   RouteMode,
   RouteRoadAlert,
   RouteWeatherSample,
+  SavedStageRoute,
   SimulationState,
   SimulationSpeedMode,
   SpeechSettings,
@@ -57,8 +58,10 @@ const demoStage: StagePoint[] = [
 
 const vehicleStorageKey = 'rally-pacenotes.vehicle.v1'
 const driveRunsStorageKey = 'rally-pacenotes.drive-runs.v1'
+const savedRoutesStorageKey = 'rally-pacenotes.saved-routes.v1'
 const maxAttemptSamples = 1_800
 const maxCircuitLapCount = 99
+const maxSavedRoutes = 48
 
 function pointName(index: number, total: number, mode: RouteMode) {
   if (mode === 'closed-circuit') {
@@ -228,6 +231,45 @@ function loadDriveRuns(): DriveRunSummary[] {
   }
 }
 
+function loadSavedRoutes(): SavedStageRoute[] {
+  if (typeof localStorage === 'undefined') return []
+
+  try {
+    const stored = localStorage.getItem(savedRoutesStorageKey)
+    if (!stored) return []
+    return (JSON.parse(stored) as SavedStageRoute[]).filter((entry) =>
+      entry.id
+      && entry.name
+      && entry.route?.geometry?.length > 1
+      && entry.waypoints?.length > 0,
+    )
+  } catch {
+    return []
+  }
+}
+
+function cloneRoute(routeInfo: RouteInfo): RouteInfo {
+  return {
+    ...routeInfo,
+    geometry: routeInfo.geometry.map((point) => ({ ...point })),
+    steps: routeInfo.steps.map((step) => ({
+      ...step,
+      maneuver: {
+        ...step.maneuver,
+        location: [...step.maneuver.location] as [number, number],
+      },
+    })),
+  }
+}
+
+function clonePaceNotes(notes: PaceNote[]): PaceNote[] {
+  return notes.map((note) => ({ ...note }))
+}
+
+function cloneWaypoints(points: StagePoint[]): StagePoint[] {
+  return points.map((point) => ({ ...point }))
+}
+
 function finiteNumber(value: unknown) {
   return typeof value === 'number' && Number.isFinite(value)
 }
@@ -345,6 +387,7 @@ export const useStageStore = defineStore('stage', () => {
   const paceNotes = ref<PaceNote[]>([])
   const selectedNoteId = ref('')
   const circuitLapCount = ref(3)
+  const savedRoutes = ref<SavedStageRoute[]>(loadSavedRoutes())
   const loadingRoute = ref(false)
   const routeError = ref('')
   const vehicle = ref<VehicleProfile>(loadVehicle())
@@ -747,7 +790,7 @@ export const useStageStore = defineStore('stage', () => {
 
   function addSearchResultWaypoint(result: LocationSearchResult) {
     const requestedName = result.query || result.name
-    if (result.precision !== 'address' && /\d/.test(requestedName)) {
+    if (result.precision !== 'address') {
       pendingManualWaypointName.value = requestedName
       pendingManualWaypointPoint.value = { lat: result.lat, lng: result.lng }
       return 'manual' as const
@@ -755,6 +798,11 @@ export const useStageStore = defineStore('stage', () => {
 
     addWaypoint({ lat: result.lat, lng: result.lng }, result.name)
     return 'added' as const
+  }
+
+  function setPendingManualWaypointPoint(point: LatLng) {
+    if (!pendingManualWaypointName.value) return
+    pendingManualWaypointPoint.value = { lat: point.lat, lng: point.lng }
   }
 
   function placePendingManualWaypoint(point: LatLng) {
@@ -887,6 +935,55 @@ export const useStageStore = defineStore('stage', () => {
     } finally {
       loadingRoute.value = false
     }
+  }
+
+  function saveCurrentRoute(routeId = '') {
+    if (!route.value) return ''
+
+    const now = Date.now()
+    const existing = savedRoutes.value.find((entry) => entry.id === routeId)
+    const savedRoute: SavedStageRoute = {
+      id: existing?.id ?? id(),
+      name: stageName.value.trim() || 'Saved route',
+      routeMode: routeMode.value,
+      waypoints: cloneWaypoints(waypoints.value),
+      route: cloneRoute(route.value),
+      paceNotes: clonePaceNotes(paceNotes.value.length ? paceNotes.value : generatePaceNotes(route.value)),
+      circuitLapCount: circuitLapCount.value,
+      savedAt: existing?.savedAt ?? now,
+      updatedAt: now,
+    }
+
+    savedRoutes.value = [
+      savedRoute,
+      ...savedRoutes.value.filter((entry) => entry.id !== savedRoute.id),
+    ].slice(0, maxSavedRoutes)
+    return savedRoute.id
+  }
+
+  function loadSavedRoute(routeId: string) {
+    const savedRoute = savedRoutes.value.find((entry) => entry.id === routeId)
+    if (!savedRoute) return false
+
+    stageName.value = savedRoute.name
+    routeMode.value = savedRoute.routeMode
+    circuitLapCount.value = clamp(savedRoute.circuitLapCount || 1, 1, maxCircuitLapCount)
+    waypoints.value = cloneWaypoints(savedRoute.waypoints)
+    route.value = cloneRoute(savedRoute.route)
+    paceNotes.value = clonePaceNotes(savedRoute.paceNotes.length ? savedRoute.paceNotes : generatePaceNotes(savedRoute.route))
+    selectedNoteId.value = paceNotes.value[1]?.id ?? paceNotes.value[0]?.id ?? ''
+    routeError.value = ''
+    pendingManualWaypointName.value = ''
+    pendingManualWaypointPoint.value = null
+    resetSimulation()
+    resetDriveAttempt()
+    void refreshRouteWeather(route.value)
+    void refreshRouteRoadAlerts(route.value, [])
+    return true
+  }
+
+  function removeSavedRoute(routeId: string) {
+    savedRoutes.value = savedRoutes.value.filter((entry) => entry.id !== routeId)
   }
 
   async function refreshRouteWeather(targetRoute = route.value) {
@@ -1494,6 +1591,15 @@ export const useStageStore = defineStore('stage', () => {
     { deep: true },
   )
 
+  watch(
+    savedRoutes,
+    (value) => {
+      if (typeof localStorage === 'undefined') return
+      localStorage.setItem(savedRoutesStorageKey, JSON.stringify(value))
+    },
+    { deep: true },
+  )
+
   return {
     stageName,
     routeMode,
@@ -1502,6 +1608,7 @@ export const useStageStore = defineStore('stage', () => {
     paceNotes,
     selectedNoteId,
     circuitLapCount,
+    savedRoutes,
     loadingRoute,
     routeError,
     vehicle,
@@ -1555,6 +1662,7 @@ export const useStageStore = defineStore('stage', () => {
     currentDriveRun,
     addWaypoint,
     addSearchResultWaypoint,
+    setPendingManualWaypointPoint,
     placePendingManualWaypoint,
     cancelPendingManualWaypoint,
     updateWaypointPosition,
@@ -1567,6 +1675,9 @@ export const useStageStore = defineStore('stage', () => {
     clearStage,
     loadDemo,
     buildRoute,
+    saveCurrentRoute,
+    loadSavedRoute,
+    removeSavedRoute,
     regenerateNotes,
     refreshRouteWeather,
     refreshRouteRoadAlerts,

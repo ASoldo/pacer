@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import L from 'leaflet'
-import type { LatLng, MapOrientationMode, PaceNote, RouteInfo, RouteMode, StagePoint } from '../types'
+import type { LatLng, MapOrientationMode, PaceNote, RouteInfo, RouteMode, SavedStageRoute, StagePoint } from '../types'
 import { bearingDegrees, cumulativeDistances, distanceMeters, signedBearingDelta } from '../utils/geo'
 import { paceCode, paceColor, paceDisplay } from '../utils/pace'
 
@@ -18,6 +18,8 @@ const props = defineProps<{
   driveRunning: boolean
   manualPlacementPoint: LatLng | null
   manualPlacementLabel: string
+  savedRoutes: SavedStageRoute[]
+  showSavedRoutes: boolean
   showNoteMarkers: boolean
   activeDistance: number
   selectedNoteId: string
@@ -73,6 +75,7 @@ let map: L.Map | null = null
 let tileLayer: L.TileLayer | null = null
 let waypointLayer: L.LayerGroup | null = null
 let manualPlacementLayer: L.LayerGroup | null = null
+let savedRouteLayer: L.LayerGroup | null = null
 let routeLayer: L.LayerGroup | null = null
 let routeDecorationLayer: L.LayerGroup | null = null
 let noteLayer: L.LayerGroup | null = null
@@ -80,6 +83,7 @@ let carLayer: L.Marker | null = null
 let ghostLayer: L.Marker | null = null
 let routeData: RouteRenderData | null = null
 let lastRouteKey = ''
+let lastSavedRouteRenderKey = ''
 let lastRouteRenderKey = ''
 let lastRouteDecorationKey = ''
 let lastNoteRenderKey = ''
@@ -1131,6 +1135,47 @@ function focusManualPlacement() {
   map.getContainer().dataset.zoom = map.getZoom().toFixed(2)
 }
 
+function savedRouteRenderKey() {
+  if (!props.showSavedRoutes) return ''
+  return props.savedRoutes
+    .map((savedRoute) => `${savedRoute.id}:${savedRoute.updatedAt}:${savedRoute.route.geometry.length}`)
+    .join('|')
+}
+
+function renderSavedRoutes() {
+  if (!map) return
+
+  const renderKey = savedRouteRenderKey()
+  if (renderKey === lastSavedRouteRenderKey) return
+  lastSavedRouteRenderKey = renderKey
+
+  clearLayer(savedRouteLayer)
+  savedRouteLayer = null
+
+  if (!props.showSavedRoutes || props.savedRoutes.length === 0) return
+
+  savedRouteLayer = L.layerGroup()
+  const colors = ['#22c55e', '#38bdf8', '#f59e0b', '#f43f5e', '#a78bfa']
+
+  props.savedRoutes.forEach((savedRoute, index) => {
+    const tuples = savedRoute.route.geometry.map((point) => [point.lat, point.lng] as L.LatLngTuple)
+    if (tuples.length < 2) return
+
+    L.polyline(tuples, {
+      color: colors[index % colors.length],
+      weight: 3,
+      opacity: 0.58,
+      dashArray: '8 7',
+      lineCap: 'round',
+      lineJoin: 'round',
+      interactive: false,
+      className: 'rally-saved-route',
+    }).addTo(savedRouteLayer as L.LayerGroup)
+  })
+
+  savedRouteLayer.addTo(map)
+}
+
 function renderRoute() {
   if (!map) return
 
@@ -1381,6 +1426,7 @@ function renderCar() {
 }
 
 function renderAll() {
+  renderSavedRoutes()
   renderRoute()
   renderWaypoints()
   renderManualPlacement()
@@ -1456,6 +1502,10 @@ onBeforeUnmount(() => {
 })
 
 watch(() => props.waypoints, renderWaypoints, { deep: true })
+watch(() => [props.showSavedRoutes, props.savedRoutes], () => {
+  renderSavedRoutes()
+  scheduleMapResize(4)
+}, { deep: true })
 watch(() => props.manualPlacementPoint, () => {
   renderManualPlacement()
   focusManualPlacement()

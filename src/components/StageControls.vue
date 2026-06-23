@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useSortable } from '@vueuse/integrations/useSortable'
+import L from 'leaflet'
 import {
+  Check,
   ChevronDown,
   ChevronUp,
   CircleOff,
@@ -13,10 +15,13 @@ import {
   RefreshCw,
   Route,
   RotateCcw,
+  Save,
   Search,
   Trash2,
+  X,
 } from '@lucide/vue'
 import { useStageStore } from '../stores/stage'
+import type { LatLng } from '../types'
 import { formatMeters } from '../utils/geo'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
@@ -36,18 +41,30 @@ import {
 } from '@/components/ui/empty'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 
 const stage = useStageStore()
-const emit = defineEmits<{
-  'manual-place': []
-}>()
 const circuitLapInput = ref(String(stage.circuitLapCount))
 const circuitLapFocused = ref(false)
 const locationQuery = ref('')
+const selectedSavedRouteId = ref('')
 const pointListEl = ref<HTMLElement | null>(null)
+const pinpointMapEl = ref<HTMLElement | null>(null)
 const draggedPointId = ref('')
 let searchTimer: number | null = null
+let pinpointMap: L.Map | null = null
+let pinpointTileLayer: L.TileLayer | null = null
+let pinpointMarker: L.Marker | null = null
+let pinpointResizeFrame = 0
+const tileUrl =
+  import.meta.env.VITE_MAP_TILE_URL ??
+  'https://tile.openstreetmap.org/{z}/{x}/{y}.png'
+const tileAttribution =
+  import.meta.env.VITE_MAP_ATTRIBUTION ??
+  '&copy; OpenStreetMap contributors'
+const tileMaxZoom = Number(import.meta.env.VITE_MAP_MAX_ZOOM ?? 19)
+const tileSubdomains = (import.meta.env.VITE_MAP_SUBDOMAINS ?? '').split('')
 
 watch(
   () => stage.circuitLapCount,
@@ -117,7 +134,114 @@ function addSearchResult(resultId: string) {
 
   const outcome = stage.addSearchResultWaypoint(result)
   locationQuery.value = ''
-  if (outcome === 'manual') emit('manual-place')
+  if (outcome === 'manual') schedulePinpointMapSync()
+}
+
+function saveRouteSnapshot() {
+  const savedRouteId = stage.saveCurrentRoute(selectedSavedRouteId.value)
+  if (savedRouteId) selectedSavedRouteId.value = savedRouteId
+}
+
+function loadSavedRoute(routeId: string) {
+  if (!routeId) return
+  stage.loadSavedRoute(routeId)
+}
+
+function deleteSelectedSavedRoute() {
+  const routeId = selectedSavedRouteId.value
+  if (!routeId) return
+  stage.removeSavedRoute(routeId)
+  selectedSavedRouteId.value = ''
+}
+
+function savedRouteLabel(savedRouteId: string) {
+  const savedRoute = stage.savedRoutes.find((entry) => entry.id === savedRouteId)
+  if (!savedRoute) return 'Saved routes'
+  return `${savedRoute.name} - ${formatMeters(savedRoute.route.distance)}`
+}
+
+function setPinpoint(point: LatLng) {
+  stage.setPendingManualWaypointPoint(point)
+  pinpointMarker?.setLatLng([point.lat, point.lng])
+}
+
+function schedulePinpointMapSync() {
+  if (pinpointResizeFrame) window.cancelAnimationFrame(pinpointResizeFrame)
+  pinpointResizeFrame = window.requestAnimationFrame(() => {
+    pinpointResizeFrame = 0
+    syncPinpointMap()
+  })
+}
+
+function syncPinpointMap() {
+  const point = stage.pendingManualWaypointPoint
+  if (!pinpointMapEl.value || !point) return
+
+  if (!pinpointMap) {
+    pinpointMap = L.map(pinpointMapEl.value, {
+      attributionControl: false,
+      zoomControl: false,
+    }).setView([point.lat, point.lng], Math.min(17, tileMaxZoom))
+
+    pinpointTileLayer = L.tileLayer(tileUrl, {
+      maxZoom: tileMaxZoom,
+      keepBuffer: 3,
+      detectRetina: false,
+      subdomains: tileSubdomains,
+      attribution: tileAttribution,
+    }).addTo(pinpointMap)
+
+    pinpointMap.on('click', (event) => {
+      setPinpoint({ lat: event.latlng.lat, lng: event.latlng.lng })
+    })
+  }
+
+  if (pinpointTileLayer && !pinpointMap.hasLayer(pinpointTileLayer)) {
+    pinpointTileLayer.addTo(pinpointMap)
+  }
+
+  if (!pinpointMarker) {
+    pinpointMarker = L.marker([point.lat, point.lng], {
+      draggable: true,
+      icon: L.divIcon({
+        className: 'route-pinpoint-marker',
+        iconSize: [38, 38],
+        iconAnchor: [19, 31],
+        html: '<span></span>',
+      }),
+    }).addTo(pinpointMap)
+    pinpointMarker.on('dragend', () => {
+      const next = pinpointMarker?.getLatLng()
+      if (!next) return
+      setPinpoint({ lat: next.lat, lng: next.lng })
+    })
+  } else {
+    pinpointMarker.setLatLng([point.lat, point.lng])
+  }
+
+  pinpointMap.setView([point.lat, point.lng], Math.max(pinpointMap.getZoom(), Math.min(17, tileMaxZoom)), {
+    animate: false,
+  })
+  pinpointMap.invalidateSize({ pan: false })
+}
+
+function confirmPendingManualWaypoint() {
+  const point = stage.pendingManualWaypointPoint
+  if (!point) return
+  stage.placePendingManualWaypoint(point)
+}
+
+function cancelPendingManualWaypoint() {
+  stage.cancelPendingManualWaypoint()
+}
+
+function destroyPinpointMap() {
+  if (pinpointResizeFrame) window.cancelAnimationFrame(pinpointResizeFrame)
+  pinpointResizeFrame = 0
+  pinpointMap?.remove()
+  pinpointMap = null
+  pinpointTileLayer = null
+  pinpointMarker = null
 }
 
 useSortable(pointListEl, stage.waypoints, {
@@ -145,6 +269,25 @@ useSortable(pointListEl, stage.waypoints, {
     stage.moveWaypointToIndex(pointId, event.newIndex)
   },
 })
+
+watch(
+  () => [
+    stage.pendingManualWaypointName,
+    stage.pendingManualWaypointPoint?.lat ?? 0,
+    stage.pendingManualWaypointPoint?.lng ?? 0,
+  ],
+  () => {
+    if (!stage.pendingManualWaypointName || !stage.pendingManualWaypointPoint) {
+      destroyPinpointMap()
+      return
+    }
+
+    void nextTick(schedulePinpointMapSync)
+  },
+  { flush: 'post' },
+)
+
+onBeforeUnmount(destroyPinpointMap)
 </script>
 
 <template>
@@ -178,7 +321,7 @@ useSortable(pointListEl, stage.waypoints, {
         <Alert v-if="stage.pendingManualWaypointName" class="border-amber-500/35 bg-amber-500/10">
           <AlertDescription class="flex items-center justify-between gap-2 text-xs text-amber-100">
             <span class="min-w-0">
-              Pick the exact map point for
+              Pinpoint
               <b class="text-amber-300">{{ stage.pendingManualWaypointName }}</b>.
             </span>
             <Button
@@ -186,7 +329,7 @@ useSortable(pointListEl, stage.waypoints, {
               size="sm"
               class="h-7 shrink-0 px-2 text-amber-200 hover:text-amber-100"
               type="button"
-              @click="stage.cancelPendingManualWaypoint()"
+              @click="cancelPendingManualWaypoint"
             >
               Cancel
             </Button>
@@ -259,10 +402,10 @@ useSortable(pointListEl, stage.waypoints, {
                 <b class="flex min-w-0 items-center gap-1.5 text-foreground">
                   <span class="truncate">{{ result.name }}</span>
                   <small
-                    v-if="result.precision !== 'address' && /\\d/.test(result.query)"
+                    v-if="result.precision !== 'address'"
                     class="shrink-0 rounded border border-amber-500/40 bg-amber-500/10 px-1 py-0.5 text-[9px] font-black uppercase tracking-[0.08em] text-amber-400"
                   >
-                    approx.
+                    pinpoint
                   </small>
                 </b>
                 <span class="block truncate text-muted-foreground">{{ result.label }}</span>
@@ -334,6 +477,51 @@ useSortable(pointListEl, stage.waypoints, {
           <Route :size="17" />
           {{ stage.loadingRoute ? 'Building' : 'Build route' }}
         </Button>
+
+        <div class="grid gap-2 rounded-md border bg-muted/10 p-2">
+          <div class="grid grid-cols-[minmax(0,1fr)_auto_auto] gap-2">
+            <NativeSelect
+              v-model="selectedSavedRouteId"
+              title="Saved routes"
+              aria-label="Saved routes"
+              @change="loadSavedRoute(selectedSavedRouteId)"
+            >
+              <NativeSelectOption value="">Saved routes</NativeSelectOption>
+              <NativeSelectOption
+                v-for="savedRoute in stage.savedRoutes"
+                :key="savedRoute.id"
+                :value="savedRoute.id"
+              >
+                {{ savedRoute.name }}
+              </NativeSelectOption>
+            </NativeSelect>
+            <Button
+              variant="outline"
+              size="icon-sm"
+              type="button"
+              :disabled="!stage.route"
+              aria-label="Save active route"
+              title="Save active route"
+              @click="saveRouteSnapshot"
+            >
+              <Save :size="13" />
+            </Button>
+            <Button
+              variant="outline"
+              size="icon-sm"
+              type="button"
+              :disabled="!selectedSavedRouteId"
+              aria-label="Delete saved route"
+              title="Delete saved route"
+              @click="deleteSelectedSavedRoute"
+            >
+              <Trash2 :size="13" />
+            </Button>
+          </div>
+          <p class="truncate text-[11px] text-muted-foreground">
+            {{ selectedSavedRouteId ? savedRouteLabel(selectedSavedRouteId) : 'Save built routes for later recce or drive setup.' }}
+          </p>
+        </div>
       </CardContent>
     </Card>
 
@@ -452,6 +640,55 @@ useSortable(pointListEl, stage.waypoints, {
         </EmptyHeader>
       </Empty>
     </div>
+
+    <Teleport to="body">
+      <div
+        v-if="stage.pendingManualWaypointName && stage.pendingManualWaypointPoint"
+        class="fixed inset-0 z-[9500] grid place-items-center bg-background/55 p-3 backdrop-blur-sm"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="route-pinpoint-title"
+        data-testid="route-pinpoint-dialog"
+      >
+        <section class="grid w-[min(24rem,calc(100vw_-_1.5rem))] gap-3 rounded-lg border bg-card p-3 text-card-foreground shadow-2xl">
+          <header class="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2">
+            <div class="min-w-0">
+              <p id="route-pinpoint-title" class="truncate text-sm font-black">
+                {{ stage.pendingManualWaypointName }}
+              </p>
+              <p class="mt-1 truncate font-mono text-[11px] text-muted-foreground">
+                {{ stage.pendingManualWaypointPoint.lat.toFixed(5) }},
+                {{ stage.pendingManualWaypointPoint.lng.toFixed(5) }}
+              </p>
+            </div>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              type="button"
+              aria-label="Cancel pinpoint"
+              title="Cancel pinpoint"
+              @click="cancelPendingManualWaypoint"
+            >
+              <X :size="14" />
+            </Button>
+          </header>
+          <div
+            ref="pinpointMapEl"
+            class="h-56 overflow-hidden rounded-md border bg-muted"
+            data-testid="route-pinpoint-map"
+          />
+          <div class="grid grid-cols-2 gap-2">
+            <Button variant="outline" type="button" @click="cancelPendingManualWaypoint">
+              Cancel
+            </Button>
+            <Button type="button" @click="confirmPendingManualWaypoint">
+              <Check :size="15" />
+              Confirm
+            </Button>
+          </div>
+        </section>
+      </div>
+    </Teleport>
   </section>
 </template>
 
@@ -467,5 +704,30 @@ useSortable(pointListEl, stage.waypoints, {
 
 .waypoint-sortable-drag {
   opacity: 0.95;
+}
+
+:global(.route-pinpoint-marker) {
+  display: grid;
+  place-items: center;
+}
+
+:global(.route-pinpoint-marker span) {
+  position: relative;
+  display: block;
+  width: 28px;
+  height: 28px;
+  border: 2px solid hsl(var(--background));
+  border-radius: 999px 999px 999px 0;
+  background: hsl(var(--primary));
+  box-shadow: 0 0 0 2px hsl(var(--primary) / 0.38), 0 10px 22px hsl(0 0% 0% / 0.38);
+  transform: rotate(-45deg);
+}
+
+:global(.route-pinpoint-marker span::after) {
+  position: absolute;
+  inset: 7px;
+  border-radius: 999px;
+  background: hsl(var(--background));
+  content: '';
 }
 </style>
