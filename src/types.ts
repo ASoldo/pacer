@@ -18,7 +18,7 @@ export type LocationSearchResult = LatLng & {
   category: string
   precision: 'address' | 'street' | 'place'
   query: string
-  source: 'nominatim'
+  source: 'nominatim' | 'photon'
 }
 
 export type RouteStep = {

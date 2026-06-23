@@ -25,7 +25,9 @@ const tlsCertPath = process.env.TLS_CERT_PATH
 const tlsKeyPath = process.env.TLS_KEY_PATH
 const app = express()
 const weatherCache = new Map()
+const geocodeCache = new Map()
 const weatherCacheMaxAgeMs = 5 * 60 * 1000
+const geocodeCacheMaxAgeMs = 10 * 60 * 1000
 const upstreamTimeoutMs = 12_000
 
 app.use(cors())
@@ -80,6 +82,14 @@ function nominatimUrl(params) {
   return url
 }
 
+function photonUrl(query, limit) {
+  const url = new URL('https://photon.komoot.io/api/')
+  url.searchParams.set('q', query)
+  url.searchParams.set('limit', String(limit))
+  url.searchParams.set('lang', 'en')
+  return url
+}
+
 async function fetchNominatim(url) {
   const upstream = await fetch(url, {
     headers: {
@@ -94,6 +104,63 @@ async function fetchNominatim(url) {
 
   const payload = await upstream.json()
   return Array.isArray(payload) ? payload : []
+}
+
+async function fetchPhoton(query, limit) {
+  const upstream = await fetch(photonUrl(query, limit), {
+    headers: {
+      accept: 'application/json',
+      'user-agent': 'RallyPacer/0.3.2 local-development',
+    },
+  })
+
+  if (!upstream.ok) return []
+
+  const payload = await upstream.json()
+  const features = Array.isArray(payload?.features) ? payload.features : []
+
+  return features.flatMap((feature, index) => {
+    const coordinates = feature?.geometry?.coordinates
+    const properties = feature?.properties ?? {}
+    const lon = Number(coordinates?.[0])
+    const lat = Number(coordinates?.[1])
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return []
+
+    const name = clean(properties.name || properties.street || properties.city || query)
+    const road = clean(properties.street || (properties.osm_key === 'highway' ? properties.name : ''))
+    const placeParts = [
+      clean(properties.housenumber && road ? `${road} ${properties.housenumber}` : ''),
+      name,
+      clean(properties.city),
+      clean(properties.county),
+      clean(properties.country),
+    ].filter(Boolean)
+    const displayName = [...new Set(placeParts)].join(', ')
+    const osmType = clean(properties.osm_type)
+    const osmId = clean(properties.osm_id)
+
+    return [{
+      place_id: `photon-${osmType || 'item'}-${osmId || index}`,
+      osm_type: osmType,
+      osm_id: osmId,
+      lat: String(lat),
+      lon: String(lon),
+      category: clean(properties.osm_key) || 'place',
+      type: clean(properties.osm_value || properties.type) || 'place',
+      addresstype: properties.housenumber ? 'house' : road ? 'road' : clean(properties.type),
+      name,
+      display_name: displayName || name,
+      address: {
+        house_number: clean(properties.housenumber),
+        road,
+        city: clean(properties.city),
+        county: clean(properties.county),
+        country: clean(properties.country),
+      },
+      query,
+      source: 'photon',
+    }]
+  })
 }
 
 function geocodePrecision(item) {
@@ -111,11 +178,12 @@ function geocodeRank(item) {
   const category = clean(item.category ?? item.class).toLowerCase()
   const type = clean(item.type).toLowerCase()
   const source = clean(item.search_source)
+  const addressQuery = Boolean(parseAddressQuery(item.query))
   let score = Number(item.importance ?? 0)
 
   if (precision === 'address') score += 100
-  if (precision === 'street') score += 45
-  if (precision === 'place') score += 5
+  if (precision === 'street') score += addressQuery ? 45 : 10
+  if (precision === 'place') score += addressQuery ? 5 : 35
   if (source === 'structured') score += 35
   if (type === 'administrative' || category === 'boundary') score -= 60
 
@@ -132,7 +200,7 @@ function mergeGeocodeResults(query, groups, limit) {
         query,
         search_source: source,
         precision: geocodePrecision(result),
-        _rank: geocodeRank({ ...result, search_source: source }),
+        _rank: geocodeRank({ ...result, query, search_source: source }),
         _order: index,
       })),
     )
@@ -565,30 +633,54 @@ app.post('/api/tts', async (request, response) => {
 app.get('/api/geocode/search', async (request, response) => {
   const query = clean(request.query.q).slice(0, 160)
   const limit = Math.min(Math.max(Number(request.query.limit) || 6, 1), 8)
+  const cacheKey = `${query}:${limit}`
+  const cached = geocodeCache.get(cacheKey)
 
   if (query.length < 3) {
     response.json({ results: [] })
     return
   }
 
+  if (cached && Date.now() - cached.createdAt < geocodeCacheMaxAgeMs) {
+    response.setHeader('Cache-Control', 'max-age=300')
+    response.setHeader('X-Geocode-Cache', 'hit')
+    response.json({ results: cached.results })
+    return
+  }
+
   try {
     const address = parseAddressQuery(query)
-    const unstructured = await fetchNominatim(nominatimUrl({ q: query, limit }))
+    const unstructured = await fetchNominatim(nominatimUrl({ q: query, limit })).catch(() => [])
     const structured = address
       ? await fetchNominatim(nominatimUrl({
           street: `${address.street} ${address.houseNumber}`,
           city: address.city,
           country: address.country,
           limit,
-        }))
+        })).catch(() => [])
       : []
-
-    response.setHeader('Cache-Control', 'max-age=3600')
-    response.json({ results: mergeGeocodeResults(query, [
+    const photon = unstructured.length === 0 || structured.length === 0
+      ? await fetchPhoton(query, limit).catch(() => [])
+      : []
+    const results = mergeGeocodeResults(query, [
       { source: 'structured', results: structured },
       { source: 'nominatim', results: unstructured },
-    ], limit) })
+      { source: 'photon', results: photon },
+    ], limit)
+
+    geocodeCache.set(cacheKey, { createdAt: Date.now(), results })
+
+    response.setHeader('Cache-Control', 'max-age=3600')
+    response.setHeader('X-Geocode-Cache', 'miss')
+    response.json({ results })
   } catch (error) {
+    if (cached) {
+      response.setHeader('Cache-Control', 'max-age=60')
+      response.setHeader('X-Geocode-Cache', 'stale')
+      response.json({ results: cached.results })
+      return
+    }
+
     response.status(502).json({ error: error instanceof Error ? error.message : 'Location search unavailable' })
   }
 })

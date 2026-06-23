@@ -1,8 +1,11 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import {
+  ChevronDown,
+  ChevronUp,
   CircleOff,
   Flag,
+  GripVertical,
   LocateFixed,
   MapPinPlus,
   Milestone,
@@ -41,6 +44,7 @@ const emit = defineEmits<{
 const circuitLapInput = ref(String(stage.circuitLapCount))
 const circuitLapFocused = ref(false)
 const locationQuery = ref('')
+const draggedPointId = ref('')
 let searchTimer: number | null = null
 
 watch(
@@ -112,6 +116,24 @@ function addSearchResult(resultId: string) {
   const outcome = stage.addSearchResultWaypoint(result)
   locationQuery.value = ''
   if (outcome === 'manual') emit('manual-place')
+}
+
+function startPointDrag(pointId: string, event: DragEvent) {
+  draggedPointId.value = pointId
+  event.dataTransfer?.setData('text/plain', pointId)
+  if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move'
+}
+
+function dropPoint(targetPointId: string, event: DragEvent) {
+  event.preventDefault()
+  const sourcePointId = event.dataTransfer?.getData('text/plain') || draggedPointId.value
+  draggedPointId.value = ''
+  if (!sourcePointId) return
+  stage.moveWaypointBefore(sourcePointId, targetPointId)
+}
+
+function endPointDrag() {
+  draggedPointId.value = ''
 }
 </script>
 
@@ -351,11 +373,26 @@ function addSearchResult(resultId: string) {
 
     <div class="flex flex-col gap-2">
       <article
-        v-for="point in stage.waypoints"
+        v-for="(point, index) in stage.waypoints"
         :key="point.id"
-        class="grid grid-cols-[auto_1fr_auto] items-center gap-2 rounded-md border bg-card p-2"
+        class="grid grid-cols-[auto_1fr_auto_auto_auto] items-center gap-1.5 rounded-md border bg-card p-2 transition"
+        :class="draggedPointId === point.id ? 'opacity-45' : 'hover:bg-muted/35'"
+        draggable="true"
+        @dragstart="startPointDrag(point.id, $event)"
+        @dragend="endPointDrag"
+        @dragover.prevent
+        @drop="dropPoint(point.id, $event)"
       >
-        <MapPinPlus :size="16" class="text-primary" />
+        <button
+          class="grid h-8 w-6 cursor-grab place-items-center rounded text-muted-foreground active:cursor-grabbing"
+          type="button"
+          title="Drag to reorder point"
+          aria-label="Drag to reorder point"
+          draggable="true"
+          @dragstart="startPointDrag(point.id, $event)"
+        >
+          <GripVertical :size="15" />
+        </button>
         <div class="min-w-0">
           <Input
             :model-value="point.name"
@@ -367,6 +404,28 @@ function addSearchResult(resultId: string) {
             {{ point.lat.toFixed(5) }}, {{ point.lng.toFixed(5) }}
           </p>
         </div>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-label="Move point up"
+          title="Move point up"
+          type="button"
+          :disabled="index === 0"
+          @click="stage.moveWaypoint(point.id, -1)"
+        >
+          <ChevronUp :size="13" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-label="Move point down"
+          title="Move point down"
+          type="button"
+          :disabled="index === stage.waypoints.length - 1"
+          @click="stage.moveWaypoint(point.id, 1)"
+        >
+          <ChevronDown :size="13" />
+        </Button>
         <Button
           variant="ghost"
           size="icon-sm"

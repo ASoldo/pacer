@@ -54,6 +54,7 @@ export function useSpeech() {
   const supported = typeof window !== 'undefined' && 'speechSynthesis' in window
   const queue: SpeechJob[] = []
   let active = false
+  let activeJob: SpeechJob | null = null
   let timer: number | null = null
   let audioContext: AudioContext | null = null
   let audioSource: AudioBufferSourceNode | null = null
@@ -99,6 +100,7 @@ export function useSpeech() {
 
   const settle = () => {
     active = false
+    activeJob = null
     speaking.value = false
     runQueue()
   }
@@ -130,6 +132,22 @@ export function useSpeech() {
       // The source may already have ended between animation frames.
     }
     audioSource = null
+  }
+
+  const interruptActiveJob = (message: string) => {
+    if (timer) {
+      window.clearTimeout(timer)
+      timer = null
+    }
+
+    const interrupted = activeJob
+    playbackToken += 1
+    active = false
+    activeJob = null
+    speaking.value = false
+    stopActiveAudio()
+    if (supported) window.speechSynthesis.cancel()
+    interrupted?.onError?.(message)
   }
 
   const settingsCacheKey = (text: string, settings: SpeechSettings) =>
@@ -382,6 +400,7 @@ export function useSpeech() {
     if (!job) return
 
     active = true
+    activeJob = job
     queueLength.value = queue.length
     const token = ++playbackToken
 
@@ -409,6 +428,7 @@ export function useSpeech() {
 
     queue.splice(0)
     queueLength.value = 0
+    activeJob = null
     const token = ++playbackToken
     active = true
     speaking.value = false
@@ -421,6 +441,7 @@ export function useSpeech() {
       timer = null
       if (token !== playbackToken) return
       const job = { text, settings, channel: options.channel, onStart: options.onStart, onEnd: options.onEnd, onError: options.onError }
+      activeJob = job
       if (shouldUseServerSpeech()) {
         void playServerSpeech(job, token)
         return
@@ -473,6 +494,9 @@ export function useSpeech() {
     const firstAdvisorIndex = queue.findIndex((job) => job.channel === 'advisor')
     if (firstAdvisorIndex >= 0) queue.splice(firstAdvisorIndex, 0, ...jobs)
     else queue.push(...jobs)
+    if (activeJob?.channel === 'advisor') {
+      interruptActiveJob('Interrupted by co-driver call')
+    }
     queueLength.value = queue.length
     runQueue()
     return true
@@ -508,6 +532,7 @@ export function useSpeech() {
     queueLength.value = 0
     playbackToken += 1
     active = false
+    activeJob = null
     speaking.value = false
     lastError.value = ''
 

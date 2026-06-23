@@ -71,10 +71,18 @@ function pointName(index: number, total: number, mode: RouteMode) {
   return `Split ${index}`
 }
 
+function pointNameSuffix(name: string) {
+  const match = name.trim().match(/^(Start \/ Finish|Start|Finish|Split \d+)(?::\s*)?(.*)$/)
+  if (!match) return name.trim()
+  return match[2]?.trim() ?? ''
+}
+
 function renamePoints(points: StagePoint[], mode: RouteMode) {
   return points.map((point, index) => ({
     ...point,
-    name: pointName(index, points.length, mode),
+    name: pointNameSuffix(point.name)
+      ? `${pointName(index, points.length, mode)}: ${pointNameSuffix(point.name)}`
+      : pointName(index, points.length, mode),
   }))
 }
 
@@ -772,6 +780,32 @@ export const useStageStore = defineStore('stage', () => {
       return { ...entry, lat: point.lat, lng: point.lng }
     })
     if (changed) clearRoute()
+  }
+
+  function moveWaypoint(pointId: string, direction: -1 | 1) {
+    const currentIndex = waypoints.value.findIndex((point) => point.id === pointId)
+    const nextIndex = currentIndex + direction
+    if (currentIndex < 0 || nextIndex < 0 || nextIndex >= waypoints.value.length) return
+
+    const next = [...waypoints.value]
+    const [point] = next.splice(currentIndex, 1)
+    next.splice(nextIndex, 0, point)
+    waypoints.value = renamePoints(next, routeMode.value)
+    clearRoute()
+  }
+
+  function moveWaypointBefore(pointId: string, targetPointId: string) {
+    if (pointId === targetPointId) return
+    const currentIndex = waypoints.value.findIndex((point) => point.id === pointId)
+    const targetIndex = waypoints.value.findIndex((point) => point.id === targetPointId)
+    if (currentIndex < 0 || targetIndex < 0) return
+
+    const next = [...waypoints.value]
+    const [point] = next.splice(currentIndex, 1)
+    const adjustedTargetIndex = currentIndex < targetIndex ? targetIndex - 1 : targetIndex
+    next.splice(adjustedTargetIndex, 0, point)
+    waypoints.value = renamePoints(next, routeMode.value)
+    clearRoute()
   }
 
   function renameWaypoint(pointId: string, name: string) {
@@ -1510,6 +1544,8 @@ export const useStageStore = defineStore('stage', () => {
     placePendingManualWaypoint,
     cancelPendingManualWaypoint,
     updateWaypointPosition,
+    moveWaypoint,
+    moveWaypointBefore,
     renameWaypoint,
     removeWaypoint,
     reverseWaypoints,

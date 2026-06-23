@@ -12,6 +12,7 @@ type NominatimSearchItem = {
   addresstype?: string
   precision?: LocationSearchResult['precision']
   query?: string
+  source?: LocationSearchResult['source']
   address?: {
     house_number?: string
     housenumber?: string
@@ -78,7 +79,7 @@ export async function searchLocations(query: string): Promise<LocationSearchResu
       ].filter(Boolean).join(' / '),
       precision,
       query: requestedQuery,
-      source: 'nominatim' as const,
+      source: item.source === 'photon' ? 'photon' : 'nominatim',
     }]
   })
 }

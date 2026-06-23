@@ -94,6 +94,7 @@ const speechRetryCounts = new Map<string, number>()
 const speechRetryTimers = new Map<string, number>()
 const spokenRoadAlertIds = ref<Set<string>>(new Set())
 const routeSummarySpokenKey = ref('')
+const simulationFinishSpokenKey = ref('')
 const lessacStatus = ref<'idle' | 'queued' | 'speaking'>('idle')
 const lessacQueueCount = ref(0)
 const lessacLastTitle = ref('Lessac advisor')
@@ -151,6 +152,7 @@ function resetSpeechTracking() {
   speechRetryTimers.forEach((timer) => window.clearTimeout(timer))
   speechRetryTimers.clear()
   spokenRoadAlertIds.value = new Set()
+  simulationFinishSpokenKey.value = ''
   lessacStatus.value = 'idle'
   lessacQueueCount.value = 0
 }
@@ -461,6 +463,33 @@ function finishSitrepText() {
   return `Finish sitrep. ${lapText}Run time ${formatDuration(stage.driveAttempt.elapsedSeconds)} over ${distanceKm.toFixed(1)} kilometers. ${weatherSummaryText()} ${alertText}`
 }
 
+function simulationFinishSitrepText() {
+  const distanceKm = stage.simulation.distanceMeters > 0
+    ? stage.simulation.distanceMeters / 1000
+    : stage.totalDistance / 1000
+  const alerts = stage.routeRoadAlerts.filter((alert) => alert.distance <= Math.max(stage.simulation.distanceMeters, stage.totalDistance))
+  const alertText = alerts.length
+    ? `${alerts.length} road condition ${alerts.length === 1 ? 'item was' : 'items were'} tracked on the route. Latest: ${alerts[alerts.length - 1].title}.`
+    : 'No live road hazards were tracked on the route.'
+
+  return `Finish sitrep. Simulated run time ${formatDuration(stage.simulation.elapsedSeconds)} over ${distanceKm.toFixed(1)} kilometers. ${weatherSummaryText()} ${alertText}`
+}
+
+function speakSimulationFinishSitrep() {
+  if (!stage.route || stage.totalDistance <= 0) return
+  if (stage.simulation.distanceMeters < stage.totalDistance - 1) return
+
+  const key = [
+    routeSummaryKey(),
+    Math.round(stage.simulation.elapsedSeconds),
+    Math.round(stage.simulation.distanceMeters),
+  ].join(':')
+  if (!key || simulationFinishSpokenKey.value === key) return
+
+  simulationFinishSpokenKey.value = key
+  queueLessacReport('Finish sitrep', simulationFinishSitrepText())
+}
+
 function prepareUpcomingSpeech(currentDistance: number) {
   const bucket = Math.floor(currentDistance / 35)
   if (bucket === lastPreparedSpeechBucket) return
@@ -516,9 +545,9 @@ function toggleSimulation(running: boolean) {
     if (!stage.route) return
     stopGpsWatch()
     phoneSensors.stop()
-    speakPreRunSummary()
+    simulationFinishSpokenKey.value = ''
     stage.setSimulationRunning(true)
-    openDriveCockpit()
+    openDriveCockpit({ speakPreRun: false })
     speakCurrentWindow()
     return
   }
@@ -578,7 +607,6 @@ function startGpsDrive() {
   resetSpeechTracking()
   speech.cancel()
   speech.unlock()
-  speakPreRunSummary()
   stage.startGpsDrive()
   void phoneSensors.start()
   gpsWatchId = navigator.geolocation.watchPosition(
@@ -636,16 +664,16 @@ function selectStageSubPanelValue(value: string | number) {
   selectStageSubPanel(panel)
 }
 
-function openDriveCockpit() {
-  setDriveMode(true)
+function openDriveCockpit(options: { speakPreRun?: boolean } = {}) {
+  setDriveMode(true, options)
   appMenuOpen.value = false
 }
 
-function setDriveMode(enabled: boolean) {
+function setDriveMode(enabled: boolean, options: { speakPreRun?: boolean } = {}) {
   driveMode.value = enabled
   if (enabled) {
     void screenWakeLock.request()
-    speakPreRunSummary()
+    if (options.speakPreRun !== false) speakPreRunSummary()
     return
   }
 
@@ -731,6 +759,13 @@ watch(
   () => stage.nextNote?.id,
   (noteId) => {
     if (stage.activeDriveRunning && noteId) stage.setSelectedNote(noteId)
+  },
+)
+
+watch(
+  () => stage.simulation.running,
+  (running, previous) => {
+    if (previous && !running) speakSimulationFinishSitrep()
   },
 )
 
