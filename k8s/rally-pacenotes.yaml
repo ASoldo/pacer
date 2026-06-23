@@ -20,7 +20,7 @@ spec:
     spec:
       containers:
         - name: web
-          image: 127.0.0.1:30500/rally-pacenotes:20260622-shakedown-auto-drive
+          image: 127.0.0.1:30500/rally-pacenotes:20260623-vueuse-sortable-6c0f2bc
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
